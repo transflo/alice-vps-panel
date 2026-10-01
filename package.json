@@ -1,0 +1,16 @@
+{
+  "name": "alice-vps-panel",
+  "version": "2.0.0",
+  "private": true,
+  "description": "单用户 Alice EVO 实例管理面板",
+  "main": "server.js",
+  "scripts": {
+    "build": "npm --prefix web ci && npm --prefix web run build",
+    "start": "node server.js",
+    "test": "node --test"
+  },
+  "engines": {
+    "node": "^20.19.0 || >=22.12.0"
+  },
+  "license": "MIT"
+}

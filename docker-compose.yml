@@ -1,0 +1,21 @@
+services:
+  alice-panel:
+    build:
+      context: .
+      args:
+        # 国内服务器可在 .env 里设置 NPM_REGISTRY，加速构建时的前端依赖下载
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+    image: alice-vps-panel:latest
+    container_name: alice-panel
+    restart: unless-stopped
+    env_file: .env
+    # 面板不写磁盘、不需要任何特权：只读文件系统、去掉全部 Linux capability、禁止进程提权
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    ports:
+      # 只监听本机 10086 端口，由宿主机上的反向代理（Nginx / Caddy 等）转发并提供 HTTPS。
+      # 需要直接对外访问时，把 127.0.0.1 去掉（此时是明文 HTTP）。
+      - "127.0.0.1:10086:8080"

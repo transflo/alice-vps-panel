@@ -1,0 +1,6 @@
+.env
+.git
+*.md
+node_modules
+web/node_modules
+public
