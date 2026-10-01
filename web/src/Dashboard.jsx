@@ -24,6 +24,7 @@ import InstanceCard from './InstanceCard.jsx';
 import Logo from './Logo.jsx';
 import { useNotify } from './notify.jsx';
 import { asList, fmtCredit, fmtDate, normInstance, pick, powerState } from './utils.js';
+import AutoRenewDialog from './dialogs/AutoRenewDialog.jsx';
 import DeployDialog from './dialogs/DeployDialog.jsx';
 import RebuildDialog from './dialogs/RebuildDialog.jsx';
 import { CommandOutputDialog, ExecDialog } from './dialogs/CommandDialogs.jsx';
@@ -45,6 +46,7 @@ export default function Dashboard({ configured, onLogout }) {
   const [updatedAt, setUpdatedAt] = useState(null);
   const [busy, setBusy] = useState({});
   const [powerStates, setPowerStates] = useState({});
+  const [autoRenew, setAutoRenew] = useState({ available: true, items: {} });
   const [account, setAccount] = useState({ name: '', balance: undefined });
   const [dialogs, setDialogs] = useState([]);
 
@@ -91,6 +93,11 @@ export default function Dashboard({ configured, onLogout }) {
       const list = asList(r.data).map(normInstance);
       setInstances(list);
       loadPower(list);
+      api('GET', '/api/auto-renew')
+        .then((a) => mounted.current && a.data && setAutoRenew(a.data))
+        .catch(() => {
+          /* 自动续期设置读取失败不影响实例列表 */
+        });
       setError('');
       setUpdatedAt(new Date());
     } catch (e) {
@@ -288,6 +295,20 @@ export default function Dashboard({ configured, onLogout }) {
             }}
           />
         );
+      case 'autorenew':
+        return (
+          <AutoRenewDialog
+            key={d.key}
+            {...common}
+            inst={inst}
+            state={autoRenew}
+            withBusy={withBusy}
+            onChanged={() => {
+              closeDialog(d.key);
+              load();
+            }}
+          />
+        );
       case 'destroy':
         return (
           <DestroyDialog
@@ -340,7 +361,7 @@ export default function Dashboard({ configured, onLogout }) {
     content = (
       <Box sx={GRID_SX}>
         {instances.map((inst, i) => (
-          <InstanceCard key={inst.id || `idx-${i}`} inst={inst} power={powerStates[inst.id]} busy={Boolean(busy[inst.id])} onAction={onAction} />
+          <InstanceCard key={inst.id || `idx-${i}`} inst={inst} power={powerStates[inst.id]} autoRenew={autoRenew.items[inst.id]} busy={Boolean(busy[inst.id])} onAction={onAction} />
         ))}
       </Box>
     );

@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import AutorenewIcon from '@mui/icons-material/Autorenew';
 import ContentCopyIcon from '@mui/icons-material/ContentCopy';
 import DeleteOutlineIcon from '@mui/icons-material/DeleteOutlined';
 import FiberManualRecordIcon from '@mui/icons-material/FiberManualRecord';
@@ -81,12 +82,13 @@ function IpRow({ label, value }) {
 const MENU = [
   { action: 'poweroff', label: '强制关机', icon: <PowerOffIcon fontSize="small" /> },
   { action: 'renew', label: '续期', icon: <ScheduleIcon fontSize="small" /> },
+  { action: 'autorenew', label: '自动续期', icon: <AutorenewIcon fontSize="small" /> },
   { action: 'rebuild', label: '重装系统', icon: <SettingsBackupRestoreIcon fontSize="small" /> },
   { action: 'exec', label: '执行命令', icon: <TerminalIcon fontSize="small" /> },
   { action: 'details', label: '详细信息', icon: <InfoOutlinedIcon fontSize="small" /> },
 ];
 
-export default function InstanceCard({ inst, power, busy, onAction }) {
+export default function InstanceCard({ inst, power, autoRenew, busy, onAction }) {
   const [anchor, setAnchor] = useState(null);
   const disabled = busy || !inst.id;
   const run = (action) => {
@@ -130,6 +132,9 @@ export default function InstanceCard({ inst, power, busy, onAction }) {
             <Box component="span" sx={{ color: 'text.secondary', mr: 1 }}>到期</Box>
             {fmtDate(inst.expires)}
             {inst.expires && <Countdown to={inst.expires} />}
+            {autoRenew && autoRenew.enabled && (
+              <Chip size="small" color="info" variant="outlined" icon={<AutorenewIcon sx={{ fontSize: '14px !important' }} />} label={`自动续期 ${autoRenew.hours}h`} sx={{ ml: 1, height: 22 }} />
+            )}
           </Typography>
           {inst.created && (
             <Typography variant="body2">
