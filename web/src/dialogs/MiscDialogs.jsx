@@ -49,7 +49,7 @@ export function RenewDialog({ open, onClose, onExited, inst, withBusy, onRenewed
 
   const submit = async () => {
     const r = await withBusy(inst, () => api('POST', `/api/instances/${enc(inst.id)}/renewals`, { time: Number(time) }));
-    const next = toDate(pick(r.data, 'expiration_at'));
+    const next = toDate(pick(r.data, 'expiration_at_utc', 'expiration_at'));
     notify(next ? `续期成功，新的到期时间 ${fmtDate(next)}` : '续期成功', 'success');
     onRenewed();
   };

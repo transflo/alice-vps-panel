@@ -10,6 +10,23 @@ const CLIENT_ID = process.env.ALICE_CLIENT_ID || '';
 const SECRET = process.env.ALICE_SECRET || '';
 const TIMEOUT_MS = Number(process.env.ALICE_TIMEOUT_MS) || 20000;
 
+const { parseClockOffset, withUtcTimes } = require('./alice-time');
+
+const CLOCK_OFFSET = parseClockOffset(process.env.ALICE_CLOCK_OFFSET, (msg) => console.warn(`[panel] ${msg}`));
+
+// 列表可能直接是数组，也可能包在 { list: [...] } 之类的对象里：给每个数组里的对象追加规范化后的时间。
+function withTimesInList(data) {
+  if (Array.isArray(data)) return data.map((r) => withUtcTimes(r, CLOCK_OFFSET));
+  if (data && typeof data === 'object') {
+    const out = { ...data };
+    for (const k of Object.keys(out)) {
+      if (Array.isArray(out[k])) out[k] = out[k].map((r) => withUtcTimes(r, CLOCK_OFFSET));
+    }
+    return out;
+  }
+  return data;
+}
+
 class AliceError extends Error {
   constructor(message, status = 502) {
     super(message);
@@ -98,7 +115,7 @@ module.exports = {
   plans: () => request('GET', '/evo/plans'),
   planImages: (planId) => request('GET', `/evo/plans/${seg(planId)}/os-images`),
 
-  listInstances: () => request('GET', '/evo/instances'),
+  listInstances: async () => withTimesInList(await request('GET', '/evo/instances')),
   deploy: ({ planId, osId, hours, sshKeyId, bootScript }) =>
     request('POST', '/evo/instances/deploy', withOptional(
       { product_id: idValue(planId), os_id: idValue(osId), time: hours },
@@ -111,7 +128,8 @@ module.exports = {
   // 文档的请求示例写的是 os / sshKey / bootScript，但参数说明和 VSCode 插件用的都是 os_id / ssh_key_id / boot_script。
   rebuild: (id, { osId, sshKeyId, bootScript }) =>
     request('POST', `/evo/instances/${seg(id)}/rebuild`, withOptional({ os_id: idValue(osId) }, { sshKeyId, bootScript })),
-  renew: (id, hours) => request('POST', `/evo/instances/${seg(id)}/renewals`, { time: hours }),
+  renew: async (id, hours) =>
+    withUtcTimes(await request('POST', `/evo/instances/${seg(id)}/renewals`, { time: hours }), CLOCK_OFFSET),
   exec: (id, command) => request('POST', `/evo/instances/${seg(id)}/exec`, { command: b64(command) }),
   execResult: (id, uid) => request('GET', `/evo/instances/${seg(id)}/exec/${seg(uid)}`),
 };

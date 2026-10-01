@@ -32,6 +32,7 @@ export function asList(x) {
 
 // Alice 的时间有 "2025-11-23T14:25:25Z" 和 "2025-11-23 14:25:25" 两种写法，文档里同一实例两种写法数值相同，
 // 所以不带时区的时间也按 UTC 解析。
+// creation_at / expiration_at 已由后端规范化成带 Z 的 *_at_utc（creation_at 的偏移标签实测有误），这里只是其他字段和旧后端的兜底。
 export function toDate(v) {
   if (v === undefined || v === null || v === '') return null;
   if (typeof v === 'number' || /^\d+$/.test(String(v))) {
@@ -139,8 +140,9 @@ export function normInstance(raw) {
     os: pick(raw, 'os.name', 'os_name', 'os', 'system', 'image', 'template'),
     region: pickName(raw, 'region.name', 'region', 'location', 'datacenter', 'area'),
     specs: specText(raw),
-    created: toDate(pick(raw, 'creation_at', 'created_at', 'create_at', 'created', 'create_time')),
-    expires: toDate(pick(raw, 'expiration_at', 'expired_at', 'expire_at', 'expires_at', 'expiration', 'expire_time', 'due_at')),
+    // *_at_utc 是后端规范化后的时间（见 alice-time.js），优先使用；其余字段名是兜底。
+    created: toDate(pick(raw, 'creation_at_utc', 'creation_at', 'created_at', 'create_at', 'created', 'create_time')),
+    expires: toDate(pick(raw, 'expiration_at_utc', 'expiration_at', 'expired_at', 'expire_at', 'expires_at', 'expiration', 'expire_time', 'due_at')),
   };
 }
 
