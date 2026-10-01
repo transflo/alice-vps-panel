@@ -9,6 +9,7 @@ const { HttpError, POWER_ACTIONS, reqId, optId, hours, optText } = require('./va
 const { loadConfig } = require('./config');
 const { createStore } = require('./store');
 const { MAX_ATTEMPTS, createScheduler } = require('./scheduler');
+const { createBot } = require('./bot');
 
 const PORT = Number(process.env.PORT) || 8080;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -351,18 +352,47 @@ server.listen(PORT, HOST, () => {
   console.log(`[panel] 已启动：http://${HOST}:${PORT}  Alice API：${alice.BASE}`);
 });
 
+// Telegram bot：失败默认关闭——没有 token / 白名单就不启动，面板其余功能不受影响。
+let bot = null;
+if (config.telegram.enabled) {
+  bot = createBot({
+    token: config.telegram.token,
+    allowedIds: config.telegram.allowedIds,
+    apiBase: config.telegram.apiBase,
+    alice,
+    store,
+    displayTimeZone: config.displayTimeZone,
+    renewBeforeMinutes: config.renewBeforeMinutes,
+    renewRetryMinutes: config.renewRetryMinutes,
+    renewMaxAttempts: MAX_ATTEMPTS,
+  });
+} else if (config.telegram.error) {
+  console.error(`[bot] ${config.telegram.error}`);
+}
+
 const scheduler = createScheduler({
   alice,
   store,
-  notify: async () => {}, // 之后接入 Telegram 推送
+  notify: (event) => (bot ? bot.notify(event) : Promise.resolve()),
   cfg: {
     renewBeforeMs: config.renewBeforeMinutes * 60e3,
     retryGapMs: config.renewRetryMinutes * 60e3,
     warnBeforeMs: config.warnMinutes * 60e3,
-    botEnabled: false,
+    botEnabled: Boolean(bot),
     intervalMs: config.intervalSeconds * 1000,
   },
 });
 scheduler.start();
 
-for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => process.exit(0));
+if (bot) {
+  bot.start().then((ok) => {
+    if (!ok) console.error('[bot] 启动失败，bot 已停用（面板其余功能正常）');
+  });
+}
+
+for (const sig of ['SIGINT', 'SIGTERM']) {
+  process.on(sig, () => {
+    if (bot) bot.stop();
+    process.exit(0);
+  });
+}

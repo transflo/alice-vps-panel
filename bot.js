@@ -750,6 +750,48 @@ function createBot({
     }
   }
 
+  // ---------- 推送（调度器的事件）----------
+
+  // 返回 { text, keyboard? }；不认识的事件类型返回 null。
+  function notifyMessage(event) {
+    const inst = event.inst || {};
+    const who = `实例「${esc(inst.name || `#${inst.id}`)}」#${esc(inst.id)}`;
+    const renewButton = V.rows([V.btn('续期', `rn:${inst.id}`)]);
+    switch (event.type) {
+      case 'renewed': {
+        const t = event.expires ? Date.parse(event.expires) : NaN;
+        return { text: `✅ ${who} 已自动续期 ${event.hours} 小时${Number.isNaN(t) ? '' : `，新的到期时间 ${V.fmtTime(t, tz)}`}` };
+      }
+      case 'renew_failed': {
+        const max = event.maxAttempts || renewMaxAttempts;
+        const head = event.final
+          ? `❌ ${who} 自动续期连续 ${event.attempt || max} 次都失败：${esc(event.error)}\n不会再自动尝试了，请尽快手动续期；充值后重新开启自动续期，会再试一轮。`
+          : `❌ ${who} 自动续期失败${event.attempt ? `（第 ${event.attempt}/${max} 次）` : ''}：${esc(event.error)}\n将每隔 ${renewRetryMinutes} 分钟重试，最多尝试 ${max} 次。`;
+        return { text: head, keyboard: renewButton };
+      }
+      case 'expiring':
+        return {
+          text: `⚠️ ${who} 即将到期（${V.fmtTime(inst.expiresAt, tz)}，${V.fmtRemaining(inst.expiresAt - now())}），未开启自动续期。`,
+          keyboard: renewButton,
+        };
+      default:
+        return null;
+    }
+  }
+
+  // 发给白名单里的每个用户；某个用户发送失败（比如还没对 bot 发过 /start）只记日志，不影响其他人。
+  async function notify(event) {
+    const msg = notifyMessage(event);
+    if (!msg) return;
+    for (const id of allowed) {
+      try {
+        await send(Number(id), msg.text, msg.keyboard ? { reply_markup: { inline_keyboard: msg.keyboard } } : {});
+      } catch (err) {
+        log.warn(`[bot] 推送给 ${id} 失败：${err.message}`);
+      }
+    }
+  }
+
   // ---------- 长轮询 ----------
 
   async function loop() {
@@ -801,7 +843,7 @@ function createBot({
     if (pollAbort) pollAbort.abort();
   }
 
-  return { start, stop, handleUpdate };
+  return { start, stop, handleUpdate, notify };
 }
 
 module.exports = { createBot };

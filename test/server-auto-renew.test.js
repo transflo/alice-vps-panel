@@ -10,6 +10,7 @@ const net = require('node:net');
 const os = require('node:os');
 const path = require('node:path');
 const { startMockAlice, makeInstance, HOUR } = require('./helpers/mock-alice');
+const { startFakeTelegram } = require('./helpers/fake-telegram-http');
 
 const SERVER = path.join(__dirname, '..', 'server.js');
 
@@ -161,4 +162,30 @@ test('删除实例后清理它的自动续期设置', async (t) => {
   await call('POST', '/api/instances/1001/auto-renew', { enabled: true, hours: 24 });
   assert.equal((await call('DELETE', '/api/instances/1001')).status, 200);
   assert.deepEqual((await call('GET', '/api/auto-renew')).json.data.items, {});
+});
+
+test('Telegram 端到端：bot 响应 /list，自动续期失败和即将到期都会推送', async (t) => {
+  const alice = await startMockAlice();
+  t.after(() => alice.close());
+  alice.api.failRenewals = true;
+  const now = Date.now();
+  alice.instances.push(makeInstance(1001, { createdMs: now - 23 * HOUR, expiresMs: now + 30 * 60e3 })); // 开自动续期，续期会失败
+  alice.instances.push(makeInstance(1002, { createdMs: now - 23 * HOUR, expiresMs: now + 20 * 60e3 })); // 没开，20 分钟后到期
+  const tg = await startFakeTelegram({
+    updates: [{ update_id: 7, message: { message_id: 1, from: { id: 42 }, chat: { id: 42, type: 'private' }, text: '/list' } }],
+  });
+  t.after(() => tg.close());
+  const { call } = await startPanel(t, {
+    alice,
+    dataDir: tmpDir(),
+    env: { TELEGRAM_BOT_TOKEN: '123:abc', TELEGRAM_ALLOWED_USER_IDS: '42', TELEGRAM_API_BASE: tg.base },
+  });
+  await call('POST', '/api/instances/1001/auto-renew', { enabled: true, hours: 24 });
+
+  const has = (re) => tg.messages.some((m) => m.chat_id === 42 && re.test(m.text));
+  assert.equal(await waitFor(() => has(/vm-1001/)), true, '/list 应该回复实例卡片');
+  assert.equal(await waitFor(() => has(/自动续期失败（第 1\/3 次）：.*余额不足/)), true, '第 1 次失败应该推送');
+  assert.equal(await waitFor(() => has(/vm-1002.*即将到期/s)), true, '没开自动续期的实例应该收到到期提醒');
+  const attempts = alice.calls.filter((c) => c.method === 'POST' && c.path.endsWith('/renewals'));
+  assert.equal(attempts.length, 1, '同一个到期点 10 分钟内只试一次');
 });

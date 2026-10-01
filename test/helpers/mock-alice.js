@@ -26,6 +26,7 @@ function makeInstance(id, { createdMs, expiresMs, hostname = `vm-${id}` }) {
 function startMockAlice(port = 0) {
   const instances = [];
   const calls = [];
+  const api = { failRenewals: false }; // 置 true 时续期接口返回错误（模拟余额不足）
   const server = http.createServer((req, res) => {
     const chunks = [];
     req.on('data', (c) => chunks.push(c));
@@ -45,6 +46,7 @@ function startMockAlice(port = 0) {
         return ok({ status: 'complete', state: { state: 'running', cpu: 1.5 } });
       }
       if (req.method === 'POST' && (m = url.match(/^\/evo\/instances\/([^/]+)\/renewals$/))) {
+        if (api.failRenewals) return send(402, { code: 402, message: '余额不足' });
         const inst = instances.find((i) => String(i.id) === m[1]);
         if (!inst) return send(404, { code: 404, message: 'not found' });
         inst.expiration_at = expirationAt(Date.parse(inst.expiration_at) + body.time * HOUR);
@@ -64,6 +66,7 @@ function startMockAlice(port = 0) {
         base: `http://127.0.0.1:${server.address().port}`,
         instances,
         calls,
+        api,
         close: () => new Promise((r) => server.close(r)),
       });
     });
