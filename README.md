@@ -87,6 +87,8 @@ API 凭据在 Alice 控制台 → Account → API Keys 创建（Client ID 形如
 3. 在 `.env` 里填 `TELEGRAM_BOT_TOKEN` 和 `TELEGRAM_ALLOWED_USER_IDS`，然后 `docker compose up -d --build`。
 4. 先对 bot 发一次 `/start`（Telegram 不允许 bot 主动给没联系过它的用户发消息，不发就收不到推送）。
 
+启动时连不上 Telegram（比如服务器刚开机、网络还没就绪）不会让 bot 停用，它会按 1 秒起、最长 30 秒的间隔一直重试；只有 token 无效才会停用，并在日志里说明。
+
 | 命令 / 按钮 | 说明 |
 | --- | --- |
 | `/list` | 每台实例一张卡片（最多 10 台），按钮：开机、关机、重启、强制关机、续期、自动续期、重装、执行命令、删除、刷新 |

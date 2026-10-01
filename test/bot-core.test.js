@@ -209,6 +209,34 @@ test('start：token 无效（401）时 bot 停用并返回 false', async () => {
   assert.equal(t.tg.of('getUpdates').length, 0);
 });
 
+test('start：token 格式错误（404）同样停用，不重试', async () => {
+  const t = setupBot();
+  t.tg.handlers.getMe = () => { throw Object.assign(new Error('Not Found'), { code: 404 }); };
+  assert.equal(await t.bot.start(), false);
+  assert.equal(t.tg.of('getMe').length, 1);
+});
+
+test('start：Telegram 暂时连不上（比如开机后网络还没就绪）时重试，恢复后正常启动，不会就此停用', async () => {
+  const t = setupBot();
+  let n = 0;
+  t.tg.handlers.getMe = () => {
+    if (++n < 4) throw Object.assign(new Error('Bad Gateway'), { code: 502 });
+    return { id: 1, username: 'alice_test_bot' };
+  };
+  assert.equal(await t.bot.start(), true);
+  assert.equal(t.tg.of('getMe').length, 4);
+  await new Promise((r) => setTimeout(r, 30));
+  assert.ok(t.tg.of('getUpdates').length >= 2, '恢复后开始轮询');
+  t.bot.stop();
+});
+
+test('start：重试期间被 stop() 打断则返回 false，不会一直重试', async () => {
+  const t = setupBot({ bot: { sleep: async () => { t.bot.stop(); } } });
+  t.tg.handlers.getMe = () => { throw Object.assign(new Error('Bad Gateway'), { code: 502 }); };
+  assert.equal(await t.bot.start(), false);
+  assert.equal(t.tg.of('getMe').length, 1);
+});
+
 test('轮询到的 update 会被处理，下一次轮询从其后开始，重复投递的同一个 update 不会处理两次', async () => {
   const t = setupBot();
   const listUpdate = t.msg('/list'); // update_id = 1

@@ -823,19 +823,30 @@ function createBot({
     }
   }
 
+  // token 无效（401）或格式错误（404）才停用；网络暂时不通、Telegram 5xx 这类瞬时错误按指数退避一直重试，
+  // 否则 VPS 重启后 Docker 先于网络就绪时，bot 会一直是停用状态。stop() 可以打断重试。
   async function start() {
-    try {
-      const me = await tg.call('getMe');
-      log.log(`[bot] 已连接 @${me.username}`);
-      // 丢弃离线期间积压的 update，避免重启后重放旧指令（尤其是删除类）。
-      const backlog = await tg.call('getUpdates', { offset: -1, limit: 1, timeout: 0 });
-      if (backlog && backlog.length) offset = backlog[backlog.length - 1].update_id + 1;
-    } catch (err) {
-      log.error(`[bot] 启动失败：${err.message}`);
-      return false;
+    let backoff = 1000;
+    while (!stopped) {
+      try {
+        const me = await tg.call('getMe');
+        log.log(`[bot] 已连接 @${me.username}`);
+        // 丢弃离线期间积压的 update，避免重启后重放旧指令（尤其是删除类）。
+        const backlog = await tg.call('getUpdates', { offset: -1, limit: 1, timeout: 0 });
+        if (backlog && backlog.length) offset = backlog[backlog.length - 1].update_id + 1;
+        loop().catch((err) => log.error(`[bot] 轮询异常退出：${err.message}`));
+        return true;
+      } catch (err) {
+        if (err.code === 401 || err.code === 404) {
+          log.error(`[bot] 启动失败：${err.message}（token 无效）`);
+          return false;
+        }
+        log.warn(`[bot] 启动失败：${err.message}，${backoff / 1000} 秒后重试`);
+        await sleep(backoff);
+        backoff = Math.min(backoff * 2, 30000);
+      }
     }
-    loop().catch((err) => log.error(`[bot] 轮询异常退出：${err.message}`));
-    return true;
+    return false;
   }
 
   function stop() {

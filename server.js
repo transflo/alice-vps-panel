@@ -386,7 +386,7 @@ scheduler.start();
 
 if (bot) {
   bot.start().then((ok) => {
-    if (!ok) console.error('[bot] 启动失败，bot 已停用（面板其余功能正常）');
+    if (!ok) console.error('[bot] token 无效，bot 已停用（面板其余功能正常）');
   });
 }
 
