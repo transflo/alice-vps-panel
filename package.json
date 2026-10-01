@@ -5,7 +5,7 @@
   "description": "单用户 Alice EVO 实例管理面板",
   "main": "server.js",
   "scripts": {
-    "build": "npm --prefix web ci && npm --prefix web run build",
+    "build": "pnpm --dir web install --frozen-lockfile && pnpm --dir web build && node scripts/publish-web.js",
     "start": "node server.js",
     "test": "node --test"
   },

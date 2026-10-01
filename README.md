@@ -1,7 +1,7 @@
 # Alice 面板
 
 单用户的 Alice EVO 实例管理面板，基于 Alice Ephemera API 2.0（`https://app.alice.ws/cli/v1`）。
-前端用 React + MUI，后端只用 Node.js 标准库。一个 Docker 容器即可运行，API 凭据只保存在服务器端，浏览器永远拿不到。
+前端用 Next.js + shadcn/ui（构建时静态导出，运行时不需要 Next 服务），后端只用 Node.js 标准库。一个 Docker 容器即可运行，API 凭据只保存在服务器端，浏览器永远拿不到。
 
 ## 功能
 
@@ -31,6 +31,9 @@ docker compose up -d --build
 
 构建镜像时会在容器里下载前端依赖并打包，第一次需要一两分钟。国内服务器下载慢的话，在 `.env` 里加上
 `NPM_REGISTRY=https://registry.npmmirror.com` 再构建。
+
+构建时 `next/font` 会从 Google Fonts 下载 Figtree 和 Geist Mono 字体并**自托管**到页面里（运行时浏览器不会访问 Google），所以构建机需要能访问 `fonts.googleapis.com`。
+如果构建机访问不了，把 `web/app/layout.tsx` 里的 `next/font/google` 换成 npm 包 `@fontsource-variable/figtree`（`pnpm add` 后在布局里 `import` 它的 CSS）即可。
 
 API 凭据在 Alice 控制台 → Account → API Keys 创建（Client ID 形如 `cli_xxxx`，另有一个 Secret）。
 
@@ -145,31 +148,34 @@ location / {
 - 登录会话为随机令牌，Cookie 设置 `HttpOnly`、`SameSite=Strict`（HTTPS 下自动加 `Secure`）；容器重启后需要重新登录
 - 同一 IP 连续 5 次密码错误后锁定 15 分钟
 - 修改类请求需携带自定义请求头，防止跨站请求伪造
-- CSP 等安全响应头（脚本只允许加载面板自身的文件）
+- CSP 等安全响应头：脚本只允许加载面板自身的文件，外加页面里内联脚本的 sha256 哈希（Next.js 静态导出带有内联的启动脚本和主题初始化脚本）。哈希由 `server.js` 启动时从要发送的 HTML 原文里计算（见 `csp.js`），不使用 `unsafe-inline`，被注入进页面的脚本因为哈希对不上仍然会被浏览器拦截
 - 容器以非 root 用户运行，除 `/data` 数据卷外文件系统只读、去掉全部 Linux capability、禁止进程提权，端口只绑定在 `127.0.0.1`
 
 运行 `npm test` 可以跑全部测试：时间规范化、状态存储、自动续期调度、Telegram bot、HTTP 集成（Node 内置测试框架，不需要安装依赖）。
 
 ## 不用 Docker 运行
 
-需要 Node.js 20.19+ 或 22.12+（前端打包工具 Vite 的要求）。先打包一次前端，再启动后端（后端没有需要安装的依赖）：
+需要 Node.js 20.19+ 或 22.12+，以及 [pnpm](https://pnpm.io/)（`npm i -g pnpm`）。先打包一次前端，再启动后端（后端没有需要安装的依赖）：
 
 ```bash
-npm run build        # 安装 web/ 的依赖并打包到 public/
+npm run build        # 安装 web/ 的依赖，用 Next.js 静态导出，再把 web/out 复制成 public/
 PANEL_PASSWORD=你的密码 ALICE_CLIENT_ID=cli_xxx ALICE_SECRET=xxx node server.js
 ```
 
 ## 修改前端
 
-前端源码在 `web/`（Vite + React + MUI）。先按上面的方式在 8080 端口启动后端，然后：
+前端源码在 `web/`，是 Next.js（App Router）+ shadcn/ui（`base-maia` 风格，底层 Base UI，图标用 hugeicons）+ Tailwind CSS，用 TypeScript 写。先按上面的方式在 8080 端口启动后端，然后：
 
 ```bash
 cd web
-npm install
-npm run dev          # 打开 http://localhost:5173，接口请求会转发给 8080 端口的后端
+pnpm install
+pnpm dev             # 打开 http://localhost:3000，/api 请求会转发给 8080 端口的后端（PANEL_URL 可改地址）
+pnpm check           # 类型检查 + lint
 ```
 
-改完后运行 `npm run build`，或者直接 `docker compose up -d --build` 重新构建镜像。
+- 加组件用 shadcn 官方命令，比如 `pnpm dlx shadcn@latest add tabs`；生成的组件在 `web/components/ui/`，用法以 <https://ui.shadcn.com/docs> 为准。
+- 生产构建（`pnpm build`）是静态导出，不支持 `rewrites` / `headers` 等需要服务端的功能，所以 `next.config.ts` 里开发时和构建时的配置不同；响应头（CSP 等）由 `server.js` 负责。
+- 改完后运行 `npm run build`，或者直接 `docker compose up -d --build` 重新构建镜像。
 
 ## 文件结构
 
@@ -178,18 +184,22 @@ server.js              HTTP 服务：登录、会话、接口路由、静态文�
 alice.js               Alice API 客户端（所有 Alice 接口都在这里）
 alice-time.js          Alice 时间的规范化（修正 creation_at 的偏移标签）
 validate.js            参数校验（网页接口和 bot 共用）
-normalize.js           后端用的 Alice 数据整理（移植自 web/src/utils.js，见下）
+normalize.js           后端用的 Alice 数据整理（移植自 web/lib/alice.ts，见下）
 store.js               状态存储：自动续期设置与去重记录（DATA_DIR/state.json，原子写入）
 config.js              环境变量解析与校验
 scheduler.js           自动续期与到期提醒的调度器
 telegram.js            Telegram Bot API 的最小客户端
 bot.js / bot-views.js  Telegram bot：路由、确认令牌、向导、长轮询、推送 / 消息渲染
 test/                  测试（含假 Alice、假 Telegram）
-web/                   前端源码（Vite + React + MUI）
-  src/Dashboard.jsx    实例列表页和各种操作
-  src/InstanceCard.jsx 实例卡片
-  src/dialogs/         新建、重装、续期、删除、执行命令等弹窗
-  src/utils.js         Alice 返回数据的整理和格式化（后端的 normalize.js 是它的另一份实现，改行为时两边要同步）
+csp.js                 内容安全策略：按页面计算内联脚本的哈希
+scripts/publish-web.js 把 web/out 复制成 public/
+web/                   前端源码（Next.js + shadcn/ui，TypeScript）
+  app/                 页面入口、全局样式、布局（主题、提示、字体）
+  components/          实例卡片、仪表盘、登录页等
+  components/dialogs/  新建、重装、续期、自动续期、删除、执行命令等弹窗
+  components/ui/       shadcn 组件（由 shadcn CLI 生成）
+  hooks/               列表和弹窗的数据加载
+  lib/alice.ts         Alice 返回数据的整理和格式化（后端的 normalize.js 是它的另一份实现，改行为时两边要同步）
 public/                前端打包结果（构建时生成，不用手动修改）
 Dockerfile             两阶段构建：先打包前端，再生成只含后端和静态文件的运行镜像
 docker-compose.yml

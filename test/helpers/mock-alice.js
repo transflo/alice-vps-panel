@@ -52,6 +52,33 @@ function startMockAlice(port = 0) {
         inst.expiration_at = expirationAt(Date.parse(inst.expiration_at) + body.time * HOUR);
         return ok({ expiration_at: inst.expiration_at });
       }
+      // 下面这些接口返回固定的演示数据，用于网页和 bot 的手动验收。
+      if (req.method === 'GET' && url === '/account/profile') return ok({ email: 'demo@example.com', credit: 12345678 });
+      if (req.method === 'GET' && url === '/evo/permissions') return ok({ max_time: 168, allow_packages: '38|39' });
+      if (req.method === 'GET' && url === '/evo/plans') {
+        return ok([
+          { id: 38, name: 'Plan-A', cpu: 1, memory: 1, disk: 10, stock: 3 },
+          { id: 39, name: 'Plan-B', cpu: 2, memory: 2, disk: 20, stock: 0 },
+        ]);
+      }
+      if (req.method === 'GET' && /^\/evo\/plans\/[^/]+\/os-images$/.test(url)) {
+        return ok([
+          { group_id: 2, group_name: 'Debian', os_list: [{ id: 201, name: 'Debian 12' }] },
+          { group_id: 1, group_name: 'Ubuntu', os_list: [{ id: 101, name: 'Ubuntu 24.04' }, { id: 102, name: 'Ubuntu 22.04' }] },
+        ]);
+      }
+      if (req.method === 'GET' && url === '/account/ssh-keys') return ok([{ id: 5, name: 'laptop' }]);
+      if (req.method === 'POST' && url === '/evo/instances/deploy') {
+        const now = Date.now();
+        instances.push(makeInstance(2002, { createdMs: now, expiresMs: now + (body.time || 24) * HOUR, hostname: 'new-vm' }));
+        return ok({ id: 2002, hostname: 'new-vm', ipv4: '198.51.100.9', password: 'p@ss<word>', boot_script_uid: 'bs-uid-1' });
+      }
+      if (req.method === 'POST' && /^\/evo\/instances\/[^/]+\/rebuild$/.test(url)) return ok({ password: 'new-pass' });
+      if (req.method === 'POST' && /^\/evo\/instances\/[^/]+\/power$/.test(url)) return ok(null);
+      if (req.method === 'POST' && /^\/evo\/instances\/[^/]+\/exec$/.test(url)) return ok({ command_uid: 'u1' });
+      if (req.method === 'GET' && /^\/evo\/instances\/[^/]+\/exec\/[^/]+$/.test(url)) {
+        return ok({ status: 'complete', output: Buffer.from('up 3 days, load average: 0.01\n<b>ok</b>\n').toString('base64') });
+      }
       if (req.method === 'DELETE' && (m = url.match(/^\/evo\/instances\/([^/]+)$/))) {
         const i = instances.findIndex((x) => String(x.id) === m[1]);
         if (i >= 0) instances.splice(i, 1);

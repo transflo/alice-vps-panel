@@ -1,6 +1,6 @@
 'use strict';
 
-// 后端用的 Alice 数据整理，移植自 web/src/utils.js 与 web/src/data.js。
+// 后端用的 Alice 数据整理，移植自 web/lib/alice.ts 与 web/lib/data.ts。
 // 运行镜像里没有 web/，两边无法共用同一份代码；修改这里的行为时请对照网页版的同名函数。
 
 // 按顺序取第一个非空的标量字段，支持 "plan.name" 这样的路径。
