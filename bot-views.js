@@ -32,6 +32,18 @@ function tail(text, max) {
   return t.length <= max ? { text: t, truncated: false } : { text: t.slice(t.length - max), truncated: true };
 }
 
+// 按"HTML 转义之后"的长度截取：keep='tail' 保留末尾（命令输出），'head' 保留开头（待确认的命令）。
+// 单个字符转义后最多变成 5 个字符（&amp;），所以不能只按原文长度截。
+function clipEscaped(text, max, keep) {
+  const original = String(text);
+  let t = original.length > max ? (keep === 'tail' ? original.slice(-max) : original.slice(0, max)) : original;
+  while (esc(t).length > max) {
+    const drop = Math.max(1, Math.ceil((esc(t).length - max) / 5));
+    t = keep === 'tail' ? t.slice(drop) : t.slice(0, t.length - drop);
+  }
+  return { text: t, truncated: t.length < original.length };
+}
+
 // callback_data 不能超过 64 字节；超长的按钮直接不生成（实例 ID 允许最长 64 个字符，实际是几位数字）。
 function btn(text, data) {
   return Buffer.byteLength(data) <= CALLBACK_MAX_BYTES ? { text, callback_data: data } : null;
@@ -75,4 +87,4 @@ function hoursKeyboard(prefix, options, backData) {
   return rows(...grid);
 }
 
-module.exports = { MAX_TEXT, esc, btn, rows, fmtTime, fmtRemaining, tail, instanceCard, hoursKeyboard };
+module.exports = { MAX_TEXT, esc, btn, rows, fmtTime, fmtRemaining, tail, clipEscaped, instanceCard, hoursKeyboard };
