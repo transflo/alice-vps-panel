@@ -11,16 +11,28 @@ const { createScheduler, decide } = require('../scheduler');
 const silent = { warn() {}, error() {}, log() {} };
 const NOW = Date.parse('2026-10-01T12:00:00Z');
 const MIN = 60e3;
-const cfg = { renewBeforeMs: 10 * MIN, warnBeforeMs: 30 * MIN, botEnabled: true, intervalMs: 60e3 };
+const cfg = { renewBeforeMs: 60 * MIN, retryGapMs: 10 * MIN, warnBeforeMs: 30 * MIN, botEnabled: true, intervalMs: 60e3 };
 const inst = (minLeft, status = 'active') => ({ id: '1', status, expiresAt: NOW + minLeft * MIN });
 const on = { enabled: true, hours: 24 };
 const off = { enabled: false, hours: 24 };
 const D = (args) => decide({ now: NOW, cfg, cycle: {}, ...args });
 
 test('decide：已开启自动续期，剩余时间进入窗口才续期', () => {
-  assert.equal(D({ entry: on, inst: inst(11) }), 'none');
-  assert.equal(D({ entry: on, inst: inst(10) }), 'renew');
+  assert.equal(D({ entry: on, inst: inst(61) }), 'none');
+  assert.equal(D({ entry: on, inst: inst(60) }), 'renew');
   assert.equal(D({ entry: on, inst: inst(1) }), 'renew');
+});
+
+test('decide：失败后要等间隔才重试，最多 3 次，之后这个到期点不再尝试', () => {
+  const i = inst(50);
+  const key = new Date(i.expiresAt).toISOString();
+  const tried = (attempts, agoMin) => ({ attemptFor: key, attempts, lastAttemptAt: NOW - agoMin * MIN });
+  assert.equal(D({ entry: on, inst: i, cycle: tried(1, 9) }), 'none', '间隔没到');
+  assert.equal(D({ entry: on, inst: i, cycle: tried(1, 10) }), 'renew', '第 2 次');
+  assert.equal(D({ entry: on, inst: i, cycle: tried(2, 10) }), 'renew', '第 3 次');
+  assert.equal(D({ entry: on, inst: i, cycle: tried(3, 600) }), 'none', '已经试满 3 次');
+  // 计数属于某一个到期点：到期时间变了（比如用户手动续期过），重新开始
+  assert.equal(D({ entry: on, inst: i, cycle: { attemptFor: '2020-01-01T00:00:00.000Z', attempts: 3, lastAttemptAt: NOW } }), 'renew');
 });
 
 test('decide：已到期、实例状态为 expired、没有到期时间 → 不处理', () => {
@@ -56,8 +68,8 @@ const raw = (minLeft, extra = {}) => ({
   id: 1, hostname: 'vm', status: 'active', expiration_at_utc: new Date(NOW + minLeft * MIN).toISOString(), ...extra,
 });
 
-function setup({ instances, renew, autoRenew = { 1: on }, botEnabled = true, listInstances, configured = () => true } = {}) {
-  const store = createStore({ dir: fs.mkdtempSync(path.join(os.tmpdir(), 'alice-sched-')), now: () => NOW, log: silent });
+function setup({ instances, renew, autoRenew = { 1: on }, botEnabled = true, listInstances, configured = () => true, clock = { now: NOW } } = {}) {
+  const store = createStore({ dir: fs.mkdtempSync(path.join(os.tmpdir(), 'alice-sched-')), now: () => clock.now, log: silent });
   for (const [id, e] of Object.entries(autoRenew)) store.setAutoRenew(id, e);
   const calls = { list: 0, renew: [] };
   const events = [];
@@ -70,9 +82,9 @@ function setup({ instances, renew, autoRenew = { 1: on }, botEnabled = true, lis
     },
   };
   const scheduler = createScheduler({
-    alice, store, notify: async (e) => { events.push(e); }, cfg: { ...cfg, botEnabled }, now: () => NOW, log: silent,
+    alice, store, notify: async (e) => { events.push(e); }, cfg: { ...cfg, botEnabled }, now: () => clock.now, log: silent,
   });
-  return { scheduler, calls, events, store };
+  return { scheduler, calls, events, store, clock };
 }
 
 test('tick：进入窗口时续期并通知；列表仍是旧到期时间的下一轮不会重复续期', async () => {
@@ -95,17 +107,64 @@ test('tick：续期成功后到期时间变长，不再续期', async () => {
   assert.equal(calls.renew.length, 1);
 });
 
-test('tick：续期失败只通知一次，但每轮都会重试', async () => {
-  const { scheduler, calls, events } = setup({
-    instances: () => [raw(5)],
+test('tick：续期失败：间隔没到不重试，到了才重试，最多 3 次；第 1 次和最后一次失败各通知一次', async () => {
+  const { scheduler, calls, events, clock } = setup({
+    instances: () => [raw(60)], // 固定的到期点：NOW + 60 分钟
     renew: () => { throw new Error('余额不足'); },
   });
-  await scheduler.tick();
-  await scheduler.tick();
-  await scheduler.tick();
+  await scheduler.tick(); // 第 1 次
+  clock.now += 5 * MIN;
+  await scheduler.tick(); // 才过 5 分钟：不重试
+  assert.equal(calls.renew.length, 1);
+  clock.now += 5 * MIN;
+  await scheduler.tick(); // 满 10 分钟：第 2 次
+  assert.equal(calls.renew.length, 2);
+  clock.now += 10 * MIN;
+  await scheduler.tick(); // 第 3 次
   assert.equal(calls.renew.length, 3);
-  assert.deepEqual(events.map((e) => e.type), ['renew_failed']);
+  for (let i = 0; i < 3; i++) {
+    clock.now += 10 * MIN;
+    await scheduler.tick(); // 已试满：不再尝试
+  }
+  assert.equal(calls.renew.length, 3);
+  assert.deepEqual(events.map((e) => [e.type, e.attempt, e.maxAttempts, e.final]), [
+    ['renew_failed', 1, 3, false],
+    ['renew_failed', 3, 3, true],
+  ]);
   assert.equal(events[0].error, '余额不足');
+});
+
+test('tick：前两次失败、第 3 次成功：通知 失败 → 已续期，之后不再续期', async () => {
+  let n = 0;
+  const { scheduler, calls, events, clock } = setup({
+    instances: () => [raw(60)],
+    renew: () => {
+      if (++n < 3) throw new Error('Alice 暂时不可用');
+      return { expiration_at_utc: new Date(NOW + 24 * 3600e3).toISOString() };
+    },
+  });
+  for (let i = 0; i < 6; i++) {
+    await scheduler.tick();
+    clock.now += 10 * MIN;
+  }
+  assert.equal(calls.renew.length, 3);
+  assert.deepEqual(events.map((e) => e.type), ['renew_failed', 'renewed']);
+  assert.equal(events[0].final, false);
+});
+
+test('tick：重新保存自动续期设置后，试满 3 次的实例可以再试', async () => {
+  const { scheduler, calls, store, clock } = setup({
+    instances: () => [raw(60)],
+    renew: () => { throw new Error('余额不足'); },
+  });
+  for (let i = 0; i < 5; i++) {
+    await scheduler.tick();
+    clock.now += 10 * MIN;
+  }
+  assert.equal(calls.renew.length, 3);
+  store.setAutoRenew('1', { enabled: true, hours: 24 }); // 用户充值后重新保存设置
+  await scheduler.tick();
+  assert.equal(calls.renew.length, 4);
 });
 
 test('tick：两轮重叠时只执行一轮', async () => {

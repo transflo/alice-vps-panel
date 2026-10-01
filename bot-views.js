@@ -76,6 +76,9 @@ function instanceCard({ inst, power, auto, tz, now }) {
   };
 }
 
+// 60 的整数倍显示成小时：60 → '1 小时'，30 → '30 分钟'。
+const minutesText = (m) => (m % 60 === 0 ? `${m / 60} 小时` : `${m} 分钟`);
+
 const hoursLabel = (h) => (h % 24 === 0 ? `${h / 24} 天` : `${h} 小时`);
 
 // 时长选择键盘：每行 3 个，callback_data = `${prefix}:${h}`；backData 不为空时最后一行是"返回"。
@@ -87,4 +90,4 @@ function hoursKeyboard(prefix, options, backData) {
   return rows(...grid);
 }
 
-module.exports = { MAX_TEXT, esc, btn, rows, fmtTime, fmtRemaining, tail, clipEscaped, instanceCard, hoursKeyboard };
+module.exports = { MAX_TEXT, esc, btn, rows, fmtTime, fmtRemaining, tail, clipEscaped, minutesText, instanceCard, hoursKeyboard };

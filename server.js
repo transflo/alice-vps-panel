@@ -8,7 +8,7 @@ const alice = require('./alice');
 const { HttpError, POWER_ACTIONS, reqId, optId, hours, optText } = require('./validate');
 const { loadConfig } = require('./config');
 const { createStore } = require('./store');
-const { createScheduler } = require('./scheduler');
+const { MAX_ATTEMPTS, createScheduler } = require('./scheduler');
 
 const PORT = Number(process.env.PORT) || 8080;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -163,7 +163,12 @@ const routes = [
     const [profile, permissions] = await Promise.all([settle(alice.profile()), settle(alice.permissions())]);
     return { profile, permissions };
   }],
-  ['GET', /^\/api\/auto-renew$/, () => ({ available: store.available, items: store.listAutoRenew() })],
+  ['GET', /^\/api\/auto-renew$/, () => ({
+    available: store.available,
+    items: store.listAutoRenew(),
+    // 网页弹窗里的说明文字用：到期前多久开始、最多试几次、两次之间隔多久。
+    policy: { beforeMinutes: config.renewBeforeMinutes, maxAttempts: MAX_ATTEMPTS, retryMinutes: config.renewRetryMinutes },
+  })],
   ['GET', /^\/api\/ssh-keys$/, () => alice.sshKeys()],
   ['GET', /^\/api\/plans$/, () => alice.plans()],
   ['GET', /^\/api\/plans\/([A-Za-z0-9_-]{1,64})\/os-images$/, (m) => alice.planImages(m[1])],
@@ -352,6 +357,7 @@ const scheduler = createScheduler({
   notify: async () => {}, // 之后接入 Telegram 推送
   cfg: {
     renewBeforeMs: config.renewBeforeMinutes * 60e3,
+    retryGapMs: config.renewRetryMinutes * 60e3,
     warnBeforeMs: config.warnMinutes * 60e3,
     botEnabled: false,
     intervalMs: config.intervalSeconds * 1000,

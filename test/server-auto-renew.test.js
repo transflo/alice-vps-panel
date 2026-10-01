@@ -37,7 +37,6 @@ async function startPanel(t, { alice, dataDir, env = {} }) {
       ALICE_SECRET: 'secret',
       DATA_DIR: dataDir,
       AUTO_RENEW_INTERVAL_SECONDS: '1',
-      AUTO_RENEW_BEFORE_MINUTES: '10',
       ...env,
     },
     stdio: 'ignore',
@@ -100,7 +99,12 @@ test('自动续期接口：默认关闭、校验参数、持久化', async (t) =
   const dir = tmpDir();
   const { call } = await startPanel(t, { alice, dataDir: dir });
 
-  assert.deepEqual((await call('GET', '/api/auto-renew')).json.data, { available: true, items: {} });
+  // policy 告诉网页：到期前多久开始、最多尝试几次、两次之间隔多久（用于弹窗文案）
+  assert.deepEqual((await call('GET', '/api/auto-renew')).json.data, {
+    available: true,
+    items: {},
+    policy: { beforeMinutes: 60, maxAttempts: 3, retryMinutes: 10 },
+  });
 
   assert.equal((await call('POST', '/api/instances/1001/auto-renew', { enabled: true, hours: 0 })).status, 400);
   assert.equal((await call('POST', '/api/instances/1001/auto-renew', { enabled: 'yes', hours: 24 })).status, 400);

@@ -9,6 +9,7 @@ const { createTelegram } = require('./telegram');
 const N = require('./normalize');
 const V = require('./bot-views');
 const { parseAliceTime } = require('./alice-time');
+const { MAX_ATTEMPTS } = require('./scheduler');
 const { HttpError, POWER_ACTIONS, hours, optText, reqId } = require('./validate');
 
 const { esc } = V;
@@ -42,7 +43,9 @@ function createBot({
   alice,
   store,
   displayTimeZone = 'Asia/Shanghai',
-  renewBeforeMinutes = 10,
+  renewBeforeMinutes = 60,
+  renewRetryMinutes = 10,
+  renewMaxAttempts = MAX_ATTEMPTS,
   fetch = globalThis.fetch,
   log = console,
   now = Date.now,
@@ -230,7 +233,7 @@ function createBot({
     await send(
       chatId,
       `<b>自动续期</b>（实例 #${esc(id)}）\n当前：${cur && cur.enabled ? `开，每次 ${cur.hours} 小时` : '关'}\n`
-        + `开启后会在到期前约 ${renewBeforeMinutes} 分钟自动续期（每次续期都会扣费）。选择每次续期的时长，或关闭：`,
+        + `开启后会在到期前约 ${V.minutesText(renewBeforeMinutes)}开始自动续期（每次续期都会扣费）；失败时每隔 ${renewRetryMinutes} 分钟重试，最多尝试 ${renewMaxAttempts} 次。选择每次续期的时长，或关闭：`,
       { reply_markup: { inline_keyboard: keyboard } },
     );
   }
@@ -248,7 +251,7 @@ function createBot({
     if (max && h > max) throw new HttpError(400, `超过账户单次最长时长 ${max} 小时`);
     store.setAutoRenew(id, { enabled: true, hours: h });
     audit(userId, 'auto-renew-on', id);
-    await send(chatId, `✅ 已开启实例 #${esc(id)} 的自动续期：到期前约 ${renewBeforeMinutes} 分钟自动续 ${h} 小时。`);
+    await send(chatId, `✅ 已开启实例 #${esc(id)} 的自动续期：到期前约 ${V.minutesText(renewBeforeMinutes)}起自动续 ${h} 小时（失败最多试 ${renewMaxAttempts} 次）。`);
   }
 
   // ---------- 远程执行命令 ----------

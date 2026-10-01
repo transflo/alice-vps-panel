@@ -8,16 +8,21 @@ import { DurationField, FormDialog } from '../components.jsx';
 import { useNotify } from '../notify.jsx';
 import { useClampedHours, useMaxHours } from './DeployDialog.jsx';
 
+const DEFAULT_POLICY = { beforeMinutes: 60, maxAttempts: 3, retryMinutes: 10 };
+// 60 的整数倍显示成小时：60 → "1 小时"，30 → "30 分钟"。
+const minutesText = (m) => (m % 60 === 0 ? `${m / 60} 小时` : `${m} 分钟`);
+
 export default function AutoRenewDialog({ open, onClose, onExited, inst, state, withBusy, onChanged }) {
   const notify = useNotify();
   const max = useMaxHours();
   const current = state.items[inst.id];
+  const policy = { ...DEFAULT_POLICY, ...state.policy };
   const [enabled, setEnabled] = useState(Boolean(current && current.enabled));
   const [time, setTime] = useClampedHours(String((current && current.hours) || 24), max);
 
   const submit = async () => {
     await withBusy(inst, () => api('POST', `/api/instances/${enc(inst.id)}/auto-renew`, enabled ? { enabled: true, hours: Number(time) } : { enabled: false }));
-    notify(enabled ? `已开启自动续期：到期前自动续 ${time} 小时` : '已关闭自动续期', 'success');
+    notify(enabled ? `已开启自动续期：到期前 ${minutesText(policy.beforeMinutes)}起自动续 ${time} 小时（失败最多试 ${policy.maxAttempts} 次）` : '已关闭自动续期', 'success');
     onChanged();
   };
 
@@ -27,7 +32,8 @@ export default function AutoRenewDialog({ open, onClose, onExited, inst, state, 
         <Alert severity="warning">服务器没有可写的数据目录（DATA_DIR），暂时无法保存自动续期设置。请按 README 挂载数据卷后重试。</Alert>
       )}
       <Typography variant="body2" color="text.secondary">
-        开启后，面板会在实例到期前约 10 分钟自动续期，不需要保持页面打开。每次续期会扣费，余额不足时续期会失败。
+        开启后，面板会在实例到期前约 {minutesText(policy.beforeMinutes)}开始自动续期，不需要保持页面打开。续期失败时每隔 {policy.retryMinutes} 分钟重试，最多尝试 {policy.maxAttempts} 次，
+        都失败就不再尝试（开了 Telegram bot 会收到通知）。每次续期会扣费，余额不足时续期会失败；充值后重新保存一次设置，就会再次尝试。
       </Typography>
       <FormControlLabel control={<Switch checked={enabled} disabled={!state.available} onChange={(e) => setEnabled(e.target.checked)} />} label="启用自动续期" />
       {enabled && <DurationField label="每次续期时长" value={time} onChange={setTime} max={max} />}

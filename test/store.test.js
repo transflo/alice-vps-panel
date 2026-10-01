@@ -36,11 +36,19 @@ test('关闭后保留 hours；removeInstance 同时清理设置和周期记录',
 test('周期记录：合并更新，返回副本', () => {
   const s = createStore({ dir: tmp(), log: silent });
   s.updateCycle('1', { renewedFrom: 'a' });
-  s.updateCycle('1', { failedFor: 'b' });
+  s.updateCycle('1', { attemptFor: 'b', attempts: 2, lastAttemptAt: 123 });
   const c = s.getCycle('1');
-  assert.deepEqual(c, { renewedFrom: 'a', failedFor: 'b' });
+  assert.deepEqual(c, { renewedFrom: 'a', attemptFor: 'b', attempts: 2, lastAttemptAt: 123 });
   c.renewedFrom = 'changed';
   assert.equal(s.getCycle('1').renewedFrom, 'a');
+});
+
+test('重新保存自动续期设置会清掉失败重试的计数（让用户充值后可以再试），但保留已续期标记', () => {
+  const s = createStore({ dir: tmp(), log: silent });
+  s.setAutoRenew('1', { enabled: true, hours: 24 });
+  s.updateCycle('1', { renewedFrom: 'r', warnedFor: 'w', attemptFor: 'k', attempts: 3, lastAttemptAt: 99 });
+  s.setAutoRenew('1', { enabled: true, hours: 12 });
+  assert.deepEqual(s.getCycle('1'), { renewedFrom: 'r', warnedFor: 'w' });
 });
 
 test('状态文件损坏：改名为 .bak，从空状态启动，不抛错', () => {

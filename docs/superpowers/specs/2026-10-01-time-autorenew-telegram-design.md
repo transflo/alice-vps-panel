@@ -84,9 +84,9 @@
 - 判断逻辑是纯函数 `decide(entry, inst, now, cfg)`，返回 `renew` / `warn` / `none`，不碰网络，便于表驱动测试：
   - 实例 `status` 含 `expire`、或没有 `expiration_at_utc` → `none`。
   - 剩余时间 `remaining = 到期时间 − now`。`remaining ≤ 0`（已到期，实例可能已被回收）→ `none`。
-  - 已开启自动续期且 `remaining ≤ AUTO_RENEW_BEFORE_MINUTES`（默认 10）且 `cycle.renewedFrom ≠ 当前到期时间` → `renew`。
+  - 已开启自动续期且 `remaining ≤ AUTO_RENEW_BEFORE_MINUTES`（默认 **60**，即到期前 1 小时）且 `cycle.renewedFrom ≠ 当前到期时间`，并且这个到期点还没试满 3 次、距上次尝试已过 `AUTO_RENEW_RETRY_MINUTES`（默认 10）→ `renew`。尝试次数 `cycle.attempts` 属于某一个到期点（`cycle.attemptFor`），到期时间变了就重新计数。
   - 未开启自动续期、bot 已启用、`remaining ≤ EXPIRY_WARN_MINUTES`（默认 30，设 0 关闭）且 `cycle.warnedFor ≠ 当前到期时间` → `warn`。
-- `renew`：调用 `alice.renew(id, hours)`。成功后写入 `cycle.renewedFrom = 续期前的到期时间`，通知"已自动续期 N 小时，新到期时间 X"。失败时每分钟重试到实例到期为止，只在该周期**第一次**失败时通知（`cycle.failedFor`），通知里带错误信息。
+- `renew`：调用 `alice.renew(id, hours)`。成功后写入 `cycle.renewedFrom = 续期前的到期时间`，通知"已自动续期 N 小时，新到期时间 X"。先记下本次尝试（`attempts` / `lastAttemptAt`）再调用 Alice。失败后每隔 `AUTO_RENEW_RETRY_MINUTES` 分钟重试，**每个到期点最多尝试 3 次**，试满后不再尝试；只在**第 1 次失败**和**最后一次（第 3 次）失败**时通知（`renew_failed` 事件带 `attempt` / `maxAttempts` / `final`），通知里带错误信息。用户重新保存该实例的自动续期设置（比如充值之后）会清掉计数，再试一轮；`renewedFrom` 保留，不会重复续期。该规则对网页和 bot 开启的自动续期一视同仁（状态都在 `state.json`）；网页弹窗和 bot 菜单里的说明文字显示这几个数值（`GET /api/auto-renew` 返回 `policy`）。
 - 请求超时这类结果不明的失败：下一轮以最新的到期时间为准，如果实际已续成功则不会重复续。
 - 通知通过注入的 `notify(text, extra)` 发出；bot 未启用时只写日志。
 - 时间依赖：判断用的是 `Date.now()`，宿主机时钟需要和 NTP 同步（README 里写明）。
@@ -112,7 +112,8 @@
 | `TELEGRAM_ALLOWED_USER_IDS` | 无 | 逗号分隔的数字用户 ID。设置了 token 却没有这一项 → bot 拒绝启动并打错误日志（面板照常运行） |
 | `TELEGRAM_API_BASE` | `https://api.telegram.org` | 可选。用户的服务器可以直连 Telegram，一般不用改；保留它只是为了以后需要走反代时不用改代码 |
 | `DISPLAY_TIME_ZONE` | `Asia/Shanghai` | IANA 时区名，只用于 bot 消息里的时间；网页仍用浏览器本地时区 |
-| `AUTO_RENEW_BEFORE_MINUTES` | `10` | 自动续期的触发窗口 |
+| `AUTO_RENEW_BEFORE_MINUTES` | `60` | 自动续期的触发窗口（1 ~ 120）：到期前多久开始尝试 |
+| `AUTO_RENEW_RETRY_MINUTES` | `10` | 自动续期失败后两次尝试之间的间隔（1 ~ 60）；每个到期点最多尝试 3 次 |
 | `EXPIRY_WARN_MINUTES` | `30` | 未开自动续期时的到期提醒窗口，`0` 关闭 |
 | `AUTO_RENEW_INTERVAL_SECONDS` | `60` | 调度器轮询间隔（1 ~ 600）。一般不用改，集成测试里调小以便快速验证 |
 | `ALICE_CLOCK_OFFSET` | `+08:00` | 解释 `creation_at` 钟面数字用的偏移（§1.3） |
@@ -134,7 +135,7 @@
 
 ### 3.3 推送
 
-- 自动续期成功 / 第一次失败。
+- 自动续期成功 / 第一次失败 / 3 次都失败（不会再试，需要手动处理）。
 - 实例即将到期且未开自动续期（每个到期点只提醒一次，消息带 [续期] 按钮）。
 - 推送给白名单里的所有用户。Telegram 要求用户先对 bot 发过 `/start` 才能收到推送，README 里说明。
 

@@ -156,6 +156,21 @@ test('自动续期：开启 / 关闭写入 store', async () => {
   assert.deepEqual(t.store.getAutoRenew('1001'), { enabled: false, hours: 24 });
 });
 
+test('自动续期菜单与开启提示：说明开始时间、重试间隔和最多尝试次数', async () => {
+  const t = setupBot();
+  await t.bot.handleUpdate(t.cb('ar:1001'));
+  const menu = t.tg.sent().at(-1).text;
+  assert.match(menu, /到期前约 1 小时/);
+  assert.match(menu, /每隔 10 分钟重试，最多尝试 3 次/);
+  await t.bot.handleUpdate(t.cb('ar:1001:24'));
+  assert.match(t.tg.sent().at(-1).text, /到期前约 1 小时起自动续 24 小时（失败最多试 3 次）/);
+
+  const u = setupBot({ bot: { renewBeforeMinutes: 30, renewRetryMinutes: 5 } });
+  await u.bot.handleUpdate(u.cb('ar:1001'));
+  assert.match(u.tg.sent().at(-1).text, /到期前约 30 分钟/);
+  assert.match(u.tg.sent().at(-1).text, /每隔 5 分钟重试/);
+});
+
 test('自动续期：数据目录不可写时给出提示，不崩溃', async () => {
   const file = path.join(tmpDir(), 'f');
   fs.writeFileSync(file, 'x');

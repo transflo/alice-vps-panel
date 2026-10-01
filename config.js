@@ -43,7 +43,8 @@ function loadConfig(env = process.env, warn = (msg) => console.warn(`[panel] ${m
 
   return {
     dataDir: env.DATA_DIR || path.join(__dirname, 'data'),
-    renewBeforeMinutes: intInRange(env.AUTO_RENEW_BEFORE_MINUTES, 'AUTO_RENEW_BEFORE_MINUTES', 10, 1, 120, warn),
+    renewBeforeMinutes: intInRange(env.AUTO_RENEW_BEFORE_MINUTES, 'AUTO_RENEW_BEFORE_MINUTES', 60, 1, 120, warn),
+    renewRetryMinutes: intInRange(env.AUTO_RENEW_RETRY_MINUTES, 'AUTO_RENEW_RETRY_MINUTES', 10, 1, 60, warn),
     warnMinutes: intInRange(env.EXPIRY_WARN_MINUTES, 'EXPIRY_WARN_MINUTES', 30, 0, 1440, warn),
     intervalSeconds: intInRange(env.AUTO_RENEW_INTERVAL_SECONDS, 'AUTO_RENEW_INTERVAL_SECONDS', 60, 1, 600, warn),
     displayTimeZone: timeZone(env.DISPLAY_TIME_ZONE, 'Asia/Shanghai', warn),

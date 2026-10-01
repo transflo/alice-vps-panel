@@ -84,6 +84,13 @@ function createStore({ dir, now = Date.now, log = console }) {
       commit(() => {
         const t = new Date(now()).toISOString();
         state.autoRenew[id] = { enabled: Boolean(enabled), hours, updatedAt: t, lastSeen: t };
+        // 重新保存设置视为"请再试一次"（比如充值后）：清掉失败重试的计数；renewedFrom 要保留，避免同一个到期点重复续期。
+        const cycle = state.cycle[id];
+        if (cycle) {
+          delete cycle.attemptFor;
+          delete cycle.attempts;
+          delete cycle.lastAttemptAt;
+        }
       });
     },
     removeInstance(id) {
@@ -96,8 +103,8 @@ function createStore({ dir, now = Date.now, log = console }) {
       else change();
     },
     getCycle(id) {
-      const { renewedFrom, failedFor, warnedFor } = state.cycle[id] || {};
-      return Object.fromEntries(Object.entries({ renewedFrom, failedFor, warnedFor }).filter(([, v]) => v !== undefined));
+      const { renewedFrom, warnedFor, attemptFor, attempts, lastAttemptAt } = state.cycle[id] || {};
+      return Object.fromEntries(Object.entries({ renewedFrom, warnedFor, attemptFor, attempts, lastAttemptAt }).filter(([, v]) => v !== undefined));
     },
     updateCycle(id, patch) {
       const change = () => {

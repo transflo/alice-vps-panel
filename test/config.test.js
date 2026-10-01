@@ -12,7 +12,8 @@ const load = (env) => {
 
 test('默认值', () => {
   const { cfg, warnings } = load({});
-  assert.equal(cfg.renewBeforeMinutes, 10);
+  assert.equal(cfg.renewBeforeMinutes, 60);
+  assert.equal(cfg.renewRetryMinutes, 10);
   assert.equal(cfg.warnMinutes, 30);
   assert.equal(cfg.intervalSeconds, 60);
   assert.equal(cfg.displayTimeZone, 'Asia/Shanghai');
@@ -24,10 +25,17 @@ test('默认值', () => {
 
 test('非法数值回退默认并警告；EXPIRY_WARN_MINUTES=0 合法（关闭提醒）', () => {
   const { cfg, warnings } = load({ AUTO_RENEW_BEFORE_MINUTES: 'abc', AUTO_RENEW_INTERVAL_SECONDS: '0', EXPIRY_WARN_MINUTES: '0' });
-  assert.equal(cfg.renewBeforeMinutes, 10);
+  assert.equal(cfg.renewBeforeMinutes, 60);
   assert.equal(cfg.intervalSeconds, 60);
   assert.equal(cfg.warnMinutes, 0);
   assert.equal(warnings.length, 2);
+});
+
+test('AUTO_RENEW_RETRY_MINUTES：1 ~ 60 的整数，非法回退 10 并警告', () => {
+  assert.equal(load({ AUTO_RENEW_RETRY_MINUTES: '5' }).cfg.renewRetryMinutes, 5);
+  const { cfg, warnings } = load({ AUTO_RENEW_RETRY_MINUTES: '0' });
+  assert.equal(cfg.renewRetryMinutes, 10);
+  assert.equal(warnings.length, 1);
 });
 
 test('DATA_DIR 和 DISPLAY_TIME_ZONE；非法时区回退并警告', () => {
