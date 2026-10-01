@@ -6,6 +6,9 @@ const path = require('node:path');
 const crypto = require('node:crypto');
 const alice = require('./alice');
 const { HttpError, POWER_ACTIONS, reqId, optId, hours, optText } = require('./validate');
+const { loadConfig } = require('./config');
+const { createStore } = require('./store');
+const { createScheduler } = require('./scheduler');
 
 const PORT = Number(process.env.PORT) || 8080;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -27,6 +30,9 @@ if (PASSWORD.length < 8) {
 if (!alice.configured()) {
   console.warn('[panel] 未设置 ALICE_CLIENT_ID / ALICE_SECRET：可以登录面板，但无法调用 Alice API。');
 }
+
+const config = loadConfig();
+const store = createStore({ dir: config.dataDir });
 
 // ---------- 会话与登录限流 ----------
 
@@ -157,6 +163,7 @@ const routes = [
     const [profile, permissions] = await Promise.all([settle(alice.profile()), settle(alice.permissions())]);
     return { profile, permissions };
   }],
+  ['GET', /^\/api\/auto-renew$/, () => ({ available: store.available, items: store.listAutoRenew() })],
   ['GET', /^\/api\/ssh-keys$/, () => alice.sshKeys()],
   ['GET', /^\/api\/plans$/, () => alice.plans()],
   ['GET', /^\/api\/plans\/([A-Za-z0-9_-]{1,64})\/os-images$/, (m) => alice.planImages(m[1])],
@@ -180,7 +187,19 @@ const routes = [
     bootScript: optText(b.boot_script, '启动脚本', 64 * 1024),
   })],
   ['POST', new RegExp(`^${INST}/renewals$`), (m, b) => alice.renew(m[1], hours(b.time))],
-  ['DELETE', new RegExp(`^${INST}$`), (m) => alice.destroy(m[1])],
+  ['POST', new RegExp(`^${INST}/auto-renew$`), (m, b) => {
+    if (typeof b.enabled !== 'boolean') throw new HttpError(400, 'enabled 需为 true 或 false');
+    const prev = store.getAutoRenew(m[1]);
+    // 关闭时可以不带 hours，沿用之前的设置（没有则 24）。
+    const h = b.enabled || b.hours !== undefined ? hours(b.hours) : (prev ? prev.hours : 24);
+    store.setAutoRenew(m[1], { enabled: b.enabled, hours: h });
+    return { enabled: b.enabled, hours: h };
+  }],
+  ['DELETE', new RegExp(`^${INST}$`), async (m) => {
+    const result = await alice.destroy(m[1]);
+    store.removeInstance(m[1]);
+    return result;
+  }],
   ['POST', new RegExp(`^${INST}/exec$`), (m, b) => {
     const command = optText(b.command, '命令', 16 * 1024);
     if (!command || !command.trim()) throw new HttpError(400, '命令不能为空');
@@ -326,5 +345,18 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, HOST, () => {
   console.log(`[panel] 已启动：http://${HOST}:${PORT}  Alice API：${alice.BASE}`);
 });
+
+const scheduler = createScheduler({
+  alice,
+  store,
+  notify: async () => {}, // 之后接入 Telegram 推送
+  cfg: {
+    renewBeforeMs: config.renewBeforeMinutes * 60e3,
+    warnBeforeMs: config.warnMinutes * 60e3,
+    botEnabled: false,
+    intervalMs: config.intervalSeconds * 1000,
+  },
+});
+scheduler.start();
 
 for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => process.exit(0));
