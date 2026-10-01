@@ -275,7 +275,7 @@ function createBot({
     );
   }
 
-  // 在独立任务里轮询命令结果（与网页 CommandDialogs.jsx 同一套规则）；异常只回复，不向外抛。
+  // 在独立任务里轮询命令结果（与网页 web/components/dialogs/command-dialogs.tsx 同一套规则）；异常只回复，不向外抛。
   async function watchCommand(chatId, id, uid) {
     try {
       const started = now();

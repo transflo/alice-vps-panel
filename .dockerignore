@@ -3,4 +3,8 @@
 *.md
 node_modules
 web/node_modules
+web/.next
+web/out
+.playwright-mcp
+scripts
 public
