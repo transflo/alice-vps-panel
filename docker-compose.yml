@@ -9,7 +9,7 @@ services:
     container_name: alice-panel
     restart: unless-stopped
     env_file: .env
-    # 面板不写磁盘、不需要任何特权：只读文件系统、去掉全部 Linux capability、禁止进程提权
+    # 面板只往 /data 数据卷里写自动续期设置、不需要任何特权：其余文件系统只读、去掉全部 Linux capability、禁止进程提权
     read_only: true
     cap_drop:
       - ALL
@@ -19,3 +19,9 @@ services:
       # 只监听本机 10086 端口，由宿主机上的反向代理（Nginx / Caddy 等）转发并提供 HTTPS。
       # 需要直接对外访问时，把 127.0.0.1 去掉（此时是明文 HTTP）。
       - "127.0.0.1:10086:8080"
+    volumes:
+      # 自动续期设置（state.json）。容器其余部分仍然只读。
+      - alice-data:/data
+
+volumes:
+  alice-data:

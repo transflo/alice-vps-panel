@@ -13,8 +13,12 @@ FROM node:22-alpine
 WORKDIR /app
 ENV NODE_ENV=production PORT=8080
 
-COPY package.json server.js alice.js ./
+COPY package.json server.js alice.js alice-time.js validate.js normalize.js store.js config.js scheduler.js telegram.js bot-views.js bot.js ./
 COPY --from=web /app/public ./public
+
+# 自动续期设置保存在 /data（docker-compose 里挂载为命名卷）；目录必须在切换到 node 用户之前创建并授权。
+RUN mkdir -p /data && chown node:node /data
+ENV DATA_DIR=/data
 
 USER node
 EXPOSE 8080
