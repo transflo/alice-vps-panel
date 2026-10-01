@@ -10,6 +10,7 @@ const { loadConfig } = require('./config');
 const { createStore } = require('./store');
 const { MAX_ATTEMPTS, createScheduler } = require('./scheduler');
 const { createBot } = require('./bot');
+const { buildCsp, inlineScriptHashes } = require('./csp');
 
 const PORT = Number(process.env.PORT) || 8080;
 const HOST = process.env.HOST || '0.0.0.0';
@@ -103,10 +104,9 @@ function sessionCookie(req, token, maxAgeSec) {
 
 // ---------- HTTP 工具 ----------
 
-// MUI（Emotion）在运行时插入 <style>，所以样式需要 'unsafe-inline'；脚本仍然只允许同源文件。
+// 默认的 CSP 不允许任何内联脚本；HTML 页面会在发送时换成带有该页面内联脚本哈希的版本（见 csp.js）。
 const SECURITY_HEADERS = {
-  'Content-Security-Policy':
-    "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'",
+  'Content-Security-Policy': buildCsp(),
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
   'Referrer-Policy': 'no-referrer',
@@ -266,9 +266,10 @@ async function handleApi(req, res, pathname) {
 }
 
 // ---------- 静态文件 ----------
-// public/ 是前端构建产物（在 web/ 目录运行 npm run build 生成，Docker 构建时自动完成），启动时全部读进内存。
+// public/ 是前端构建产物（Next.js 静态导出，npm run build 生成，Docker 构建时自动完成），启动时全部读进内存。
+// PUBLIC_DIR 可以指向别的目录（测试用）。
 
-const PUBLIC_DIR = path.join(__dirname, 'public');
+const PUBLIC_DIR = process.env.PUBLIC_DIR || path.join(__dirname, 'public');
 const MIME = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
@@ -298,7 +299,9 @@ function loadStatic(dir, prefix) {
     } else if (entry.isFile() && type) {
       const body = fs.readFileSync(full);
       const etag = `"${crypto.createHash('sha256').update(body).digest('base64url').slice(0, 22)}"`;
-      staticFiles.set(urlPath, { body, type, etag });
+      // HTML 里的内联脚本（Next.js 的启动脚本和主题初始化）按各自页面的哈希放行。
+      const csp = type.startsWith('text/html') ? buildCsp(inlineScriptHashes(body.toString('utf8'))) : undefined;
+      staticFiles.set(urlPath, { body, type, etag, csp });
     }
   }
 }
@@ -317,9 +320,10 @@ function handleStatic(req, res, pathname) {
       'Content-Type': 'text/plain; charset=utf-8',
     });
   }
-  // /assets/ 下的文件名带内容哈希，可以长期缓存；index.html 等每次向服务器确认。
-  const cache = pathname.startsWith('/assets/') ? 'public, max-age=31536000, immutable' : 'no-cache';
+  // /_next/static/ 下的文件名带内容哈希，可以长期缓存；index.html 等每次向服务器确认。
+  const cache = pathname.startsWith('/_next/static/') ? 'public, max-age=31536000, immutable' : 'no-cache';
   const headers = { ...SECURITY_HEADERS, 'Content-Type': file.type, 'Cache-Control': cache, ETag: file.etag };
+  if (file.csp) headers['Content-Security-Policy'] = file.csp;
   if (req.headers['if-none-match'] === file.etag) {
     res.writeHead(304, headers);
     return res.end();
