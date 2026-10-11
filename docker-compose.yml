@@ -1,0 +1,32 @@
+services:
+  alice-panel:
+    build:
+      context: .
+      args:
+        # 国内服务器可在 .env 里设置 NPM_REGISTRY，加速构建时的前端依赖下载
+        NPM_REGISTRY: ${NPM_REGISTRY:-https://registry.npmjs.org}
+    image: alice-vps-panel:latest
+    container_name: alice-panel
+    restart: unless-stopped
+    env_file: .env
+    # 面板只往 /data 数据卷里写自动续期设置、不需要任何特权：其余文件系统只读、去掉全部 Linux capability、禁止进程提权
+    read_only: true
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
+    user: "node"
+    mem_limit: 512m
+    pids_limit: 128
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    ports:
+      # 只监听本机 10086 端口，由宿主机上的反向代理（Nginx / Caddy 等）转发并提供 HTTPS。
+      # 需要直接对外访问时，把 127.0.0.1 去掉（此时是明文 HTTP）。
+      - "127.0.0.1:10086:8080"
+    volumes:
+      # 自动续期设置（state.json）。容器其余部分仍然只读。
+      - alice-data:/data
+
+volumes:
+  alice-data:

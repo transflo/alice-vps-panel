@@ -1,0 +1,12 @@
+.env
+.git
+*.md
+node_modules
+web/node_modules
+web/.next
+web/out
+.playwright-mcp
+scripts
+# 根目录的 public/ 是前端构建产物（每次构建重新生成），不进镜像；
+# 注意这里用前导斜杠只忽略根目录，web/public 里的图片资源需要进构建上下文
+/public

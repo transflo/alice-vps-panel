@@ -1,0 +1,9 @@
+.env
+node_modules/
+web/node_modules/
+/public/*
+web/public/*
+!web/public/.gitkeep
+!web/public/logo.png
+data/
+.playwright-mcp/
