@@ -30,7 +30,7 @@ function parseToken(raw) {
   return token;
 }
 
-// 空表示用默认地址；非空必须 https（本地回环 http 仅用于测试），且不能带账号口令。
+// 空表示用默认地址；非空必须指向受信任的 Telegram 官方 API 地址，且不能带账号口令。
 function parseApiBase(raw) {
   const s = String(raw || '').trim().replace(/\/+$/, '');
   if (!s) return DEFAULT_API_BASE;
@@ -40,11 +40,11 @@ function parseApiBase(raw) {
   } catch {
     throw new HttpError(400, `Telegram API 地址无效：${s}`);
   }
-  const loopback = /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/.test(u.hostname);
   if (u.username || u.password) throw new HttpError(400, 'Telegram API 地址不能带账号口令');
-  if (u.protocol === 'http:' && !loopback) throw new HttpError(400, 'Telegram API 地址必须以 https:// 开头');
-  if (u.protocol !== 'http:' && u.protocol !== 'https:') throw new HttpError(400, 'Telegram API 地址协议不支持');
-  return s;
+  if (u.protocol !== 'https:') throw new HttpError(400, 'Telegram API 地址必须以 https:// 开头');
+  if (u.hostname !== 'api.telegram.org') throw new HttpError(400, 'Telegram API 地址仅支持 https://api.telegram.org');
+  if (u.port && u.port !== '443') throw new HttpError(400, 'Telegram API 地址端口不支持');
+  return u.origin;
 }
 
 // 日志和网页端只展示脱敏后的 token（"123456:ABC..." → "123456:***"），完整 token 只存在文件里。
