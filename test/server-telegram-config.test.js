@@ -39,6 +39,8 @@ async function startPanel(t, { alice, dataDir, env = {} }) {
       ALICE_SECRET: 'secret',
       DATA_DIR: dataDir,
       AUTO_RENEW_INTERVAL_SECONDS: '600',
+      // 测试用假 Telegram（回环地址）：正式环境只允许 https://api.telegram.org，这里显式放行回环
+      TELEGRAM_API_BASE_ALLOW_LOOPBACK: '1',
       ...env,
     },
     stdio: 'ignore',

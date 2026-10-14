@@ -92,3 +92,21 @@ test('TRUST_PROXY=0：完全忽略 X-Forwarded-For，按连接地址限流', asy
   for (let i = 1; i <= 6; i++) statuses.push(await wrongLogin(base, `203.0.113.${i}`));
   assert.deepEqual(statuses, [401, 401, 401, 401, 401, 429]);
 });
+
+// 面板端口能被绕过反代直达时（例如按 README 把 127.0.0.1 去掉对外监听），
+// 直连对端的地址不是受信代理，此时头里的 X-Forwarded-For 完全不可信：
+// 否则换一个伪造地址就是一次新的尝试额度，5 次锁定形同虚设。
+test('TRUST_PROXY=1：直连对端不在受信代理名单里时，伪造的 X-Forwarded-For 一律不采信', async (t) => {
+  // 把受信代理限定成别的地址 → 直连的回环测试客户端就成了"非受信对端"
+  const base = await startPanel(t, { TRUST_PROXY: '1', TRUSTED_PROXY_IPS: '203.0.113.9' });
+  const statuses = [];
+  for (let i = 1; i <= 6; i++) statuses.push(await wrongLogin(base, `198.51.100.${i}`));
+  assert.deepEqual(statuses, [401, 401, 401, 401, 401, 429]);
+});
+
+test('TRUSTED_PROXY_IPS 显式列出代理地址时，仍按 XFF 里的真实客户端区分', async (t) => {
+  const base = await startPanel(t, { TRUST_PROXY: '1', TRUSTED_PROXY_IPS: '127.0.0.1' });
+  for (let i = 1; i <= 5; i++) assert.equal(await wrongLogin(base, `10.0.0.${i}, 203.0.113.5`), 401);
+  assert.equal(await wrongLogin(base, '10.0.0.9, 203.0.113.5'), 429, '同一个真实客户端应被锁定');
+  assert.equal(await wrongLogin(base, '10.0.0.9, 203.0.113.6'), 401, '其他客户端不受影响');
+});

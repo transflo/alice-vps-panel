@@ -35,10 +35,31 @@ const TRUST_PROXY = (() => {
   const n = Number(v);
   return Number.isInteger(n) && n > 0 ? n : 0;
 })();
+// 转发头（X-Forwarded-For）只有在「直连面板的对端」确实是受信代理时才可信，
+// 否则任何能直达面板的人都能靠伪造这个头无限猜密码（限流按头里的地址计数）。
+// 默认受信对端见 isTrustedProxy；TRUSTED_PROXY_IPS 一旦设置就**取代**默认列表。
+const TRUSTED_PROXY_IPS = String(process.env.TRUSTED_PROXY_IPS || '')
+  .split(/[,\s]+/)
+  .filter(Boolean);
 const COOKIE = 'alice_panel_session';
+
+// 占位密码：从 .env.example 抄过来忘了改的，或写死在公开文档/字典里的值，一律拒绝。
+const PLACEHOLDER_PASSWORDS = new Set([
+  'change-me-please', 'change-me', 'changeme', 'changeme123', 'password', 'password123',
+  '12345678', '123456789', 'admin123', 'alice-panel',
+]);
 
 if (PASSWORD.length < 8) {
   console.error('[panel] PANEL_PASSWORD 未设置或少于 8 位，拒绝启动。');
+  process.exit(1);
+}
+if (PLACEHOLDER_PASSWORDS.has(PASSWORD.toLowerCase())) {
+  console.error('[panel] PANEL_PASSWORD 是示例/字典里的占位密码，等于没有密码（面板能 root 登录你的实例），请改成你自己的密码后重启。');
+  process.exit(1);
+}
+// Alice 凭据只会发往 ALICE_API_BASE：地址不安全（明文 http / 带账号口令）就拒绝启动，别把 secret 送出去。
+if (alice.baseError()) {
+  console.error(`[panel] ${alice.baseError()}，拒绝启动（Alice 凭据会明文泄露）。请修正 .env 里的 ALICE_API_BASE。`);
   process.exit(1);
 }
 if (!alice.configured()) {
@@ -93,8 +114,33 @@ function sessionOf(req) {
   return token;
 }
 
+// 直连对端是否受信：回环、私有网段、链路本地地址，或 TRUSTED_PROXY_IPS 里显式列出的地址。
+// TRUSTED_PROXY_IPS 非空时只认它列出的地址（不再用内置默认值）。
+function isTrustedProxy(addr) {
+  if (!addr) return false;
+  const ip = /^::ffff:\d+\.\d+\.\d+\.\d+$/i.test(addr) ? addr.slice(7) : addr; // IPv4-mapped IPv6
+  if (TRUSTED_PROXY_IPS.length) return TRUSTED_PROXY_IPS.includes(ip) || TRUSTED_PROXY_IPS.includes(addr);
+  if (ip === '::1' || /^127\./.test(ip)) return true; // 回环
+  if (/^10\./.test(ip) || /^192\.168\./.test(ip)) return true;
+  if (/^172\.(1[6-9]|2\d|3[01])\./.test(ip)) return true;
+  if (/^169\.254\./.test(ip)) return true; // IPv4 链路本地
+  if (/^f[cd][0-9a-f]{2}:/i.test(ip)) return true; // IPv6 ULA
+  if (/^fe80:/i.test(ip)) return true; // IPv6 链路本地
+  return false;
+}
+
+let warnedUntrustedPeer = false;
+
 function clientIp(req) {
-  const forwarded = TRUST_PROXY && req.headers['x-forwarded-for'];
+  const peer = req.socket.remoteAddress || '';
+  const header = req.headers['x-forwarded-for'];
+  // 只有直连对端是受信代理时才看转发头：否则伪造 X-Forwarded-For 就能让限流按任意 IP 计数，
+  // 5 次锁定形同虚设（面板密码后面是 deploy / destroy / exec，等于实例的 root）。
+  const forwarded = TRUST_PROXY && isTrustedProxy(peer) ? header : '';
+  if (TRUST_PROXY && !forwarded && header && !warnedUntrustedPeer) {
+    warnedUntrustedPeer = true;
+    console.warn(`[panel] 直连对端 ${peer || '未知'} 不在受信代理名单里，已忽略它发来的 X-Forwarded-For（登录限流按连接地址计数）。如果那确实是你的反向代理，请把它的地址填进 TRUSTED_PROXY_IPS。`);
+  }
   if (forwarded) {
     // 每层代理把它看到的对端地址追加在右边，最左边的值是客户端自己写的，不能信。
     // 从右数第 TRUST_PROXY 个，才是最外一层受信代理看到的真实客户端。
@@ -102,11 +148,11 @@ function clientIp(req) {
     if (hops.length) {
       // 转发头里的地址数量少于受信代理层数时，说明请求绕过了代理直达（或配置错误）：
       // 此时不能信任头里的任何值，回退到连接地址，避免限流被伪造 IP 绕过。
-      if (hops.length < TRUST_PROXY) return req.socket.remoteAddress || 'unknown';
+      if (hops.length < TRUST_PROXY) return peer || 'unknown';
       return hops[hops.length - TRUST_PROXY];
     }
   }
-  return req.socket.remoteAddress || 'unknown';
+  return peer || 'unknown';
 }
 
 function isHttps(req) {
@@ -122,11 +168,14 @@ function sessionCookie(req, token, maxAgeSec) {
 // ---------- HTTP 工具 ----------
 
 // 默认的 CSP 不允许任何内联脚本；HTML 页面会在发送时换成带有该页面内联脚本哈希的版本（见 csp.js）。
+// HSTS 一并发出：面板自己只讲 HTTP，但反代转发给浏览器时这条头是走 HTTPS 的，浏览器才会采纳；
+// 纯 HTTP 直连时按 RFC 6797 会被浏览器忽略，不会把本地调试搞坏。
 const SECURITY_HEADERS = {
   'Content-Security-Policy': buildCsp(),
   'X-Content-Type-Options': 'nosniff',
   'X-Frame-Options': 'DENY',
   'Referrer-Policy': 'no-referrer',
+  'Strict-Transport-Security': 'max-age=31536000',
 };
 
 function send(res, status, body, headers = {}) {
@@ -143,15 +192,25 @@ function send(res, status, body, headers = {}) {
 function readJson(req, limit = 256 * 1024) {
   return new Promise((resolve, reject) => {
     let size = 0;
+    let settled = false;
     const chunks = [];
+    // 超限时只停止读取（pause），不要 destroy：销毁连接会让 413 根本没机会发出去，
+    // 客户端只看到连接被重置。Node 会在响应写完后自己关掉这条连接。
+    const fail = (err) => {
+      if (settled) return;
+      settled = true;
+      req.pause();
+      reject(err);
+    };
     req.on('data', (c) => {
+      if (settled) return;
       size += c.length;
-      if (size > limit) {
-        reject(new HttpError(413, '请求内容过大'));
-        req.destroy();
-      } else chunks.push(c);
+      if (size > limit) fail(new HttpError(413, '请求内容过大'));
+      else chunks.push(c);
     });
     req.on('end', () => {
+      if (settled) return;
+      settled = true;
       if (!chunks.length) return resolve({});
       try {
         const v = JSON.parse(Buffer.concat(chunks).toString('utf8'));
@@ -160,7 +219,11 @@ function readJson(req, limit = 256 * 1024) {
         reject(new HttpError(400, '请求不是合法的 JSON'));
       }
     });
-    req.on('error', reject);
+    req.on('error', (err) => {
+      if (settled) return;
+      settled = true;
+      reject(err);
+    });
   });
 }
 
@@ -444,7 +507,10 @@ const server = http.createServer(async (req, res) => {
 server.listen(PORT, HOST, () => {
   console.log(`[panel] 已启动：http://${HOST}:${PORT}  Alice API：${alice.BASE}`);
   if (TRUST_PROXY !== 0) {
-    console.warn('[panel] TRUST_PROXY!=0：将信任 X-Forwarded-For / X-Forwarded-Proto，请确保面板仅监听 127.0.0.1 并由反向代理转发，不要直接暴露到公网。');
+    const peers = TRUSTED_PROXY_IPS.length
+      ? `TRUSTED_PROXY_IPS 指定的地址（${TRUSTED_PROXY_IPS.join(', ')}）`
+      : '回环 / 私有网段 / 链路本地地址';
+    console.warn(`[panel] TRUST_PROXY=${TRUST_PROXY}：仅当直连对端是${peers}时才采信 X-Forwarded-For（登录限流按它计数）；X-Forwarded-Proto 仍无条件采信。请确保面板由反向代理转发，不要直接暴露到公网。`);
   }
 });
 

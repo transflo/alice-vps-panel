@@ -49,12 +49,18 @@ test('/exec 输出超过 3500 字符：只保留末尾并说明，整条消息�
   assert.match(out, /END<\/pre>/);
 });
 
-test('/exec 输出全是 < 或 &：按转义后的长度截断，整条消息仍不超过 4096', async () => {
+test('/exec 长命令：完整分段显示（不藏中间部分），每条消息都不超 4096；输出仍按转义长度截断', async () => {
   const t = setupBot({ alice: { execResult: () => ({ status: 'complete', output: Buffer.from('&'.repeat(3000)).toString('base64') }) } });
-  await t.bot.handleUpdate(t.msg(`/exec 1001 ${'<'.repeat(4000)}`));
-  const confirm = t.tg.sent().at(-1).text;
-  assert.ok(confirm.length <= 4096, `确认消息 ${confirm.length} 字符`);
-  assert.match(confirm, /仅显示开头与结尾|仅显示前/);
+  const command = '<'.repeat(4000);
+  await t.bot.handleUpdate(t.msg(`/exec 1001 ${command}`));
+  const sent = t.tg.of('sendMessage').map((m) => m.text);
+  for (const text of sent) assert.ok(text.length <= 4096, `消息 ${text.length} 字符`);
+  // 完整命令必须全部发出来：把各段 <pre> 里的正文拼起来应等于整条命令（没有省略任何一段）
+  const body = sent
+    .flatMap((text) => [...text.matchAll(/<pre>([\s\S]*?)<\/pre>/g)].map((m) => m[1]))
+    .join('');
+  assert.equal(body, '&lt;'.repeat(command.length), '命令正文完整显示，不能只显示开头和结尾');
+  assert.match(sent.at(-1), /完整命令/);
   await t.bot.handleUpdate(t.cb(t.tokenOf(t.tg.sent().at(-1), 'c')));
   assert.equal(t.callsOf('exec')[0][2].length, 4000, '实际执行完整命令');
   await tick();
@@ -62,6 +68,47 @@ test('/exec 输出全是 < 或 &：按转义后的长度截断，整条消息仍
   const out = t.tg.of('sendMessage').at(-1).text;
   assert.ok(out.length <= 4096, `输出消息 ${out.length} 字符`);
   assert.match(out, /已截断/);
+});
+
+test('/exec 并发查询超限：提示发送失败也不能留下未处理的 Promise 拒绝（会带走整个面板进程）', async () => {
+  const rejections = [];
+  const onRejection = (err) => rejections.push(err);
+  process.on('unhandledRejection', onRejection);
+  try {
+    // execResult 永不返回 → 前 3 个 watch 一直挂着，占满 MAX_WATCHES（3）
+    const t = setupBot({ alice: { execResult: () => new Promise(() => {}) } });
+    for (let i = 0; i < 3; i += 1) {
+      await t.bot.handleUpdate(t.msg(`/exec 1001 echo ${i}`));
+      await t.bot.handleUpdate(t.cb(t.tokenOf(t.tg.sent().at(-1), 'c')));
+    }
+    // 第 4 个走「同时查询的命令太多」分支，而这条提示的发送失败（Telegram 429）
+    let mid = 500;
+    t.tg.handlers.sendMessage = (params) => {
+      if (/太多/.test(params.text)) {
+        throw Object.assign(new Error('Too Many Requests: retry after 30'), { code: 429 });
+      }
+      return { message_id: (mid += 1), chat: { id: params.chat_id } };
+    };
+    await t.bot.handleUpdate(t.msg('/exec 1001 echo 4'));
+    await t.bot.handleUpdate(t.cb(t.tokenOf(t.tg.sent().at(-1), 'c')));
+    for (let i = 0; i < 5; i += 1) await tick();
+  } finally {
+    process.off('unhandledRejection', onRejection);
+  }
+  assert.deepEqual(rejections, [], `出现了未处理的 Promise 拒绝：${rejections.map((e) => e.message).join('; ')}`);
+});
+
+test('转发来的消息：标出来源，内容仍按本人输入处理（只提示、不静默、不阻断）', async () => {
+  const t = setupBot();
+  const forwarded = t.msg('/exec 1001 id');
+  forwarded.message.forward_origin = { type: 'user', sender_user: { id: 999, first_name: 'Mallory' } };
+  await t.bot.handleUpdate(forwarded);
+  const first = t.tg.of('sendMessage')[0].text;
+  assert.match(first, /转发/);
+  assert.match(first, /Mallory/);
+  // 仍然照常进入确认流程
+  assert.match(t.tg.sent().at(-1).text, /<pre>id<\/pre>/);
+  assert.equal(t.callsOf('exec').length, 0, '确认前不执行');
 });
 
 test('/exec 参数不合法：不调用 Alice，各回复一条用法说明', async () => {

@@ -20,6 +20,7 @@ const SESSION_TTL_MS = 10 * 60e3; // 向导 / 等待输入命令：10 分钟无�
 const RESULT_DELETE_MS = 10 * 60e3; // 含 root 密码的消息：10 分钟后删除
 const WATCH_MAX_MS = 5 * 60e3;
 const SHOW_LIMIT = 3500; // 命令 / 输出在消息里最多显示的字符数
+const CMD_PART_MAX = 3000; // 长命令分段发送时每段（转义后）的最大长度，留出头部与 <pre> 的余量
 const EXEC_MAX = 16384;
 const SCRIPT_MAX = 64 * 1024;
 const OS_LIMIT = 40;
@@ -258,7 +259,38 @@ function createBot({
 
   const execUsage = (chatId) => send(chatId, '用法：/exec &lt;实例ID&gt; &lt;命令&gt;');
 
-  // 命令在确认消息里完整显示（过长时显示开头+结尾+哈希，实际执行完整命令）。
+  // 把长文本按「转义后长度」切段：Telegram 单条消息上限 4096，按转义后算才不会超。
+  function splitEscaped(text, max) {
+    const parts = [];
+    let current = '';
+    let used = 0;
+    for (const ch of text) {
+      const cost = esc(ch).length;
+      if (used + cost > max) {
+        parts.push(current);
+        current = '';
+        used = 0;
+      }
+      current += ch;
+      used += cost;
+    }
+    if (current) parts.push(current);
+    return parts;
+  }
+
+  // 转发来的消息不是本人打的字：危险操作都要二次确认，但确认框得让人知道内容是从别处转来的，
+  // 否则「帮别人点一下确认」就成了绕过确认的通道。只提示、不阻断（有人习惯转发自己收藏的命令）。
+  function forwardNote(m) {
+    const o = m.forward_origin;
+    const forwarded = Boolean(o || m.forward_from || m.forward_from_chat || m.forward_sender_name || m.forward_date);
+    if (!forwarded) return '';
+    const from = (o ? o.sender_user || o.sender_chat || o.chat : m.forward_from || m.forward_from_chat) || {};
+    const name = N.pick(from, 'first_name', 'title', 'username') || (o && o.sender_user_name) || m.forward_sender_name;
+    return `⚠️ 这条消息是<b>转发</b>来的${name ? `（来源：${esc(name)}）` : ''}：请确认内容确实是你自己想在实例上执行的。`;
+  }
+
+  // 命令要在确认消息里**完整**显示：看不全就等于闭着眼睛点「执行」（执行的是 root 命令）。
+  // 太长时分段把全文发完，再发确认按钮——不做「只显示开头结尾」的截断。
   async function askExec(chatId, userId, id, rawCommand) {
     const command = String(rawCommand).trim();
     if (!command || command.length > EXEC_MAX) {
@@ -266,28 +298,40 @@ function createBot({
       return;
     }
     const label = await labelOf(id);
-    let preview;
-    if (esc(command).length <= SHOW_LIMIT) {
-      preview = `<pre>${esc(command)}</pre>`;
-    } else {
-      // 按转义后长度各取约 1400 字符，保证确认消息不超 Telegram 4096 限制。
-      const head = V.clipEscaped(command.slice(0, 2000), 1400, 'head').text;
-      const tailPart = V.clipEscaped(command.slice(-2000), 1400, 'tail').text;
-      const digest = crypto.createHash('sha256').update(command, 'utf8').digest('hex').slice(0, 16);
-      preview = `（命令共 ${command.length} 个字符，sha256:${digest}，仅显示开头与结尾，实际会执行完整命令）\n<pre>${esc(`${head}\n…\n${tailPart}`)}</pre>`;
+    const digest = crypto.createHash('sha256').update(command, 'utf8').digest('hex').slice(0, 16);
+    const escaped = esc(command);
+    if (escaped.length <= SHOW_LIMIT) {
+      await askConfirm(
+        chatId,
+        userId,
+        { kind: 'exec', id, command, confirmText: '执行' },
+        `将以 root 在「${esc(label)}」上执行：\n<pre>${escaped}</pre>`,
+      );
+      return;
+    }
+    const parts = splitEscaped(command, CMD_PART_MAX);
+    await send(chatId, `命令较长（${command.length} 个字符，sha256:${digest}），完整命令分 ${parts.length} 条发送，请逐段核对：`);
+    for (let i = 0; i < parts.length; i += 1) {
+      await send(chatId, `<b>第 ${i + 1}/${parts.length} 段</b>\n<pre>${esc(parts[i])}</pre>`);
     }
     await askConfirm(
       chatId,
       userId,
       { kind: 'exec', id, command, confirmText: '执行' },
-      `将以 root 在「${esc(label)}」上执行：\n${preview}`,
+      `以上 ${parts.length} 段就是要在「${esc(label)}」上执行的完整命令（sha256:${digest}）。确认执行？`,
     );
   }
 
-  // 在独立任务里轮询命令结果（与网页 web/components/dialogs/command-dialogs.tsx 同一套规则）；异常只回复，不向外抛。
+  // 在独立任务里轮询命令结果（与网页 web/components/dialogs/command-dialogs.tsx 同一套规则）。
+  // 这个函数**绝不向外抛**：调用方是 fire-and-forget，抛出去就是未处理的 Promise 拒绝，
+  // Node 默认会让整个面板进程退出（面板、会话、自动续期调度器一起没）。
   async function watchCommand(chatId, id, uid) {
     if (activeWatches >= MAX_WATCHES) {
-      await send(chatId, '同时查询的命令太多，请稍后再试（最多同时查 3 个）。');
+      try {
+        await send(chatId, '同时查询的命令太多，请稍后再试（最多同时查 3 个）。');
+      } catch (err) {
+        log.warn(`[bot] 提示发送失败：${err.message}`);
+      }
       return;
     }
     activeWatches += 1;
@@ -575,7 +619,9 @@ function createBot({
           break;
         }
         await send(chatId, `⏳ 命令已提交（实例 #${esc(op.id)}），执行完会把输出发给你。`);
-        watchCommand(chatId, op.id, String(uid)); // 不 await：独立任务，异常在里面处理
+        // 不 await：独立任务。但仍要挂 .catch——watchCommand 里任何漏网的拒绝都会变成
+        // 未处理的 Promise 拒绝，Node 默认直接结束进程（面板和自动续期调度器一起陪葬）。
+        watchCommand(chatId, op.id, String(uid)).catch((err) => log.error(`[bot] 查询命令结果异常：${err.message}`));
         break;
       }
       case 'deploy': {
@@ -593,7 +639,7 @@ function createBot({
       case 'view_output':
         audit(who.userId, 'view-boot-output', op.id);
         await send(chatId, '正在读取启动脚本输出…');
-        watchCommand(chatId, op.id, op.uid);
+        watchCommand(chatId, op.id, op.uid).catch((err) => log.error(`[bot] 查询启动脚本输出异常：${err.message}`));
         break;
       default:
         throw new Error(`未知操作 ${op.kind}`);
@@ -621,6 +667,8 @@ function createBot({
   async function onMessage(m, who) {
     const chatId = m.chat.id;
     const text = String(m.text || '').trim();
+    const note = forwardNote(m);
+    if (note) await send(chatId, note);
     // 以 / 开头的命令在任何情况下优先于"等待输入"。
     const cmd = /^\/([A-Za-z_]+)(?:@\w+)?(?:\s+([\s\S]*))?$/.exec(text);
     if (!cmd) {

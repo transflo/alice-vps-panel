@@ -8,19 +8,39 @@
 const BASE = (process.env.ALICE_API_BASE || 'https://app.alice.ws/cli/v1').replace(/\/+$/, '');
 const CLIENT_ID = process.env.ALICE_CLIENT_ID || '';
 const SECRET = process.env.ALICE_SECRET || '';
-const TIMEOUT_MS = Number(process.env.ALICE_TIMEOUT_MS) || 20000;
-// 上游响应上限：防止被入侵/MITM 的 Alice 返回超大 body 导致 OOM。
+// 上游响应上限：防止被入侵/MITM 的 Alice 返回超大 body 导致 OOM（真正生效的读取见 readCapped）。
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 
-try {
-  const u = new URL(BASE);
-  const loopback = /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/.test(u.hostname);
-  if ((u.username || u.password) || (u.protocol === 'http:' && !loopback) || (u.protocol !== 'http:' && u.protocol !== 'https:')) {
-    console.warn('[panel] ALICE_API_BASE 无效（需为 https 地址且不能带账号口令），仍按原值使用，请检查配置');
+// ALICE_API_BASE 的校验结果，null 表示可用。凭据是用 Authorization 头带出去的：
+// 只要 BASE 是明文 http（非回环）或 URL 里带了账号口令，凭据就会泄露，所以 fail closed
+// ——server.js 启动时拒绝启动，request() 也不会把请求发出去。
+const BASE_ERROR = (() => {
+  let u;
+  try {
+    u = new URL(BASE);
+  } catch {
+    return 'ALICE_API_BASE 不是合法 URL';
   }
-} catch {
-  console.warn('[panel] ALICE_API_BASE 不是合法 URL，请检查配置');
-}
+  if (u.username || u.password) return 'ALICE_API_BASE 不能带账号口令';
+  if (u.protocol === 'http:') {
+    const loopback = /^(localhost|127\.\d+\.\d+\.\d+|\[::1\])$/.test(u.hostname);
+    if (!loopback) return 'ALICE_API_BASE 用 http 会把 Alice 凭据明文发出去，必须用 https（仅回环地址允许 http，供测试用）';
+    return null;
+  }
+  if (u.protocol !== 'https:') return `ALICE_API_BASE 协议不支持（${u.protocol}）`;
+  return null;
+})();
+
+// AbortSignal.timeout 只接受 0 ~ 4294967295 的整数；超范围会抛 RangeError，
+// 而且这行在 try 之外，会把每个 Alice 请求都变成 500。这里按 config.js 的惯例回退默认值。
+const TIMEOUT_MS = (() => {
+  const raw = process.env.ALICE_TIMEOUT_MS;
+  if (raw === undefined || String(raw).trim() === '') return 20000;
+  const n = Number(raw);
+  if (Number.isInteger(n) && n >= 1 && n <= 600000) return n;
+  console.warn(`[panel] ALICE_TIMEOUT_MS=${raw} 无效（需为 1 ~ 600000 的整数毫秒），已使用默认值 20000`);
+  return 20000;
+})();
 
 const { parseClockOffset, withUtcTimes } = require('./alice-time');
 
@@ -68,8 +88,41 @@ function withOptional(body, { sshKeyId, bootScript }) {
   return body;
 }
 
+// 按上限流式读取响应体：res.text() 会先把整个 body 读进内存再判断长度，
+// 那个「上限」等于没有，被入侵的 Alice（或 MITM）仍能把面板撑爆。这里边读边数，超了就断开。
+async function readCapped(res, max) {
+  if (!res.body) return '';
+  const reader = res.body.getReader();
+  const chunks = [];
+  let size = 0;
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      size += value.length;
+      if (size > max) {
+        try {
+          await reader.cancel();
+        } catch {
+          /* 流已经出错时 cancel 会抛，忽略即可 */
+        }
+        throw new AliceError(`Alice API 返回内容过大（超过 ${max} 字节，已拒绝）`);
+      }
+      chunks.push(value);
+    }
+  } finally {
+    try {
+      reader.releaseLock();
+    } catch {
+      /* 已释放 */
+    }
+  }
+  return Buffer.concat(chunks).toString('utf8');
+}
+
 async function request(method, path, body) {
   if (!configured()) throw new AliceError('未配置 ALICE_CLIENT_ID / ALICE_SECRET', 503);
+  if (BASE_ERROR) throw new AliceError(`${BASE_ERROR}；为避免凭据泄露，已拒绝发送请求`, 503);
 
   const headers = { Authorization: `Bearer ${CLIENT_ID}:${SECRET}`, Accept: 'application/json' };
   const init = { method, headers, signal: AbortSignal.timeout(TIMEOUT_MS) };
@@ -86,10 +139,7 @@ async function request(method, path, body) {
     throw new AliceError(`无法连接 Alice API：${reason}`);
   }
 
-  const text = await res.text();
-  if (text.length > MAX_BODY_BYTES) {
-    throw new AliceError(`Alice API 返回内容过大（${text.length} 字节，已拒绝）`);
-  }
+  const text = await readCapped(res, MAX_BODY_BYTES);
   let payload;
   try {
     payload = text ? JSON.parse(text) : {};
@@ -123,6 +173,8 @@ module.exports = {
   AliceError,
   BASE,
   configured,
+  // 非 null 表示 ALICE_API_BASE 不安全（明文 http / 带账号口令 / 非法），server.js 据此拒绝启动。
+  baseError: () => BASE_ERROR,
 
   profile: () => request('GET', '/account/profile'),
   sshKeys: () => request('GET', '/account/ssh-keys'),

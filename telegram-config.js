@@ -31,6 +31,11 @@ function parseToken(raw) {
 }
 
 // 空表示用默认地址；非空必须指向受信任的 Telegram 官方 API 地址，且不能带账号口令。
+// 原因：这个地址是唯一会把 bot token 发出去的地方，放开到任意主机就等于给 token 开了外泄通道。
+// 测试 / 本地开发要指向 fake server 时，用 TELEGRAM_API_BASE_ALLOW_LOOPBACK=1 显式放行**回环**地址
+// （仍然只允许 http/https 且不能带账号口令），生产环境不要设置这个开关。
+const LOOPBACK_RE = /^(localhost|127\.\d+\.\d+\.\d+|\[::1\]|::1)$/;
+
 function parseApiBase(raw) {
   const s = String(raw || '').trim().replace(/\/+$/, '');
   if (!s) return DEFAULT_API_BASE;
@@ -41,6 +46,10 @@ function parseApiBase(raw) {
     throw new HttpError(400, `Telegram API 地址无效：${s}`);
   }
   if (u.username || u.password) throw new HttpError(400, 'Telegram API 地址不能带账号口令');
+  if (process.env.TELEGRAM_API_BASE_ALLOW_LOOPBACK === '1' && LOOPBACK_RE.test(u.hostname)
+    && (u.protocol === 'http:' || u.protocol === 'https:')) {
+    return u.origin;
+  }
   if (u.protocol !== 'https:') throw new HttpError(400, 'Telegram API 地址必须以 https:// 开头');
   if (u.hostname !== 'api.telegram.org') throw new HttpError(400, 'Telegram API 地址仅支持 https://api.telegram.org');
   if (u.port && u.port !== '443') throw new HttpError(400, 'Telegram API 地址端口不支持');
