@@ -1,0 +1,23 @@
+# 注意：.dockerignore 里不带斜杠的模式只匹配构建上下文的**根目录**（与 .gitignore 不同，
+# 后者匹配任意深度的同名文件）。所以嵌套目录里的同类文件必须用 **/ 显式写出来，
+# 否则 .claude/worktrees/*/.env（里面有真实的 ALICE_SECRET / PANEL_PASSWORD）、
+# 嵌套的 node_modules（几百 MB）都会被打进构建上下文。
+.env
+**/.env
+.git
+**/.git
+*.md
+**/*.md
+node_modules
+**/node_modules
+web/.next
+web/out
+.playwright-mcp
+**/.playwright-mcp
+scripts
+# 本地工作树/会话目录（含 worktree、构建产物、会话记录），既不该进上下文也不该进镜像
+.claude
+data
+# 根目录的 public/ 是前端构建产物（每次构建重新生成），不进镜像；
+# 注意这里用前导斜杠只忽略根目录，web/public 里的图片资源需要进构建上下文
+/public

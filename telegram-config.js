@@ -1,0 +1,123 @@
+'use strict';
+
+// Telegram bot 的网页端配置：保存在 ${DATA_DIR}/telegram.json（0600，仅属主可读写）。
+// .env 里填了 TELEGRAM_BOT_TOKEN 时环境变量优先，网页端只读展示（改配置需要改 .env 并重启）。
+
+const fs = require('node:fs');
+const path = require('node:path');
+const { HttpError } = require('./validate');
+
+const FILE = 'telegram.json';
+const DEFAULT_API_BASE = 'https://api.telegram.org';
+
+const fileOf = (dir) => path.join(dir, FILE);
+const isObj = (v) => v && typeof v === 'object' && !Array.isArray(v);
+
+// "42, 43" / "42 43" → ['42', '43']；非法 ID 直接抛错（网页表单需要明确反馈）。
+function parseAllowedIds(raw) {
+  const list = String(raw || '').split(/[,\s]+/).filter(Boolean);
+  if (!list.length) throw new HttpError(400, '至少填写一个允许使用 bot 的数字用户 ID');
+  for (const id of list) {
+    if (!/^\d{1,15}$/.test(id)) throw new HttpError(400, `用户 ID "${id}" 无效（应为纯数字）`);
+  }
+  return [...new Set(list)];
+}
+
+function parseToken(raw) {
+  const token = String(raw || '').trim();
+  if (!token) throw new HttpError(400, '请填写 Telegram bot 的 token');
+  if (token.length > 256) throw new HttpError(400, 'token 过长');
+  return token;
+}
+
+// 空表示用默认地址；非空必须指向受信任的 Telegram 官方 API 地址，且不能带账号口令。
+// 原因：这个地址是唯一会把 bot token 发出去的地方，放开到任意主机就等于给 token 开了外泄通道。
+// 测试 / 本地开发要指向 fake server 时，用 TELEGRAM_API_BASE_ALLOW_LOOPBACK=1 显式放行**回环**地址
+// （仍然只允许 http/https 且不能带账号口令），生产环境不要设置这个开关。
+const LOOPBACK_RE = /^(localhost|127\.\d+\.\d+\.\d+|\[::1\]|::1)$/;
+
+function parseApiBase(raw) {
+  const s = String(raw || '').trim().replace(/\/+$/, '');
+  if (!s) return DEFAULT_API_BASE;
+  let u;
+  try {
+    u = new URL(s);
+  } catch {
+    throw new HttpError(400, `Telegram API 地址无效：${s}`);
+  }
+  if (u.username || u.password) throw new HttpError(400, 'Telegram API 地址不能带账号口令');
+  if (process.env.TELEGRAM_API_BASE_ALLOW_LOOPBACK === '1' && LOOPBACK_RE.test(u.hostname)
+    && (u.protocol === 'http:' || u.protocol === 'https:')) {
+    return u.origin;
+  }
+  if (u.protocol !== 'https:') throw new HttpError(400, 'Telegram API 地址必须以 https:// 开头');
+  if (u.hostname !== 'api.telegram.org') throw new HttpError(400, 'Telegram API 地址仅支持 https://api.telegram.org');
+  if (u.port && u.port !== '443') throw new HttpError(400, 'Telegram API 地址端口不支持');
+  return u.origin;
+}
+
+// 日志和网页端只展示脱敏后的 token（"123456:ABC..." → "123456:***"），完整 token 只存在文件里。
+function maskToken(token) {
+  const s = String(token || '');
+  const i = s.indexOf(':');
+  return i > 0 ? `${s.slice(0, i)}:***` : '***';
+}
+
+function readTelegramConfig(dir, log = console) {
+  const file = fileOf(dir);
+  let parsed;
+  try {
+    parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+  } catch (err) {
+    if (err.code !== 'ENOENT') log.warn(`[panel] Telegram 配置文件无法读取（${err.message}），已忽略`);
+    return null;
+  }
+  if (!isObj(parsed)) return null;
+  // 这个文件是可以被手改的（也可能留着旧版本写下的内容），所以按不可信输入重新校验一遍：
+  // apiBase 决定了 bot token 会被发到哪台机器上，读出来直接用就等于给 SSRF / token 外泄留了后门。
+  // 校验不过时退回默认地址，而不是让整个配置失效。
+  let apiBase = DEFAULT_API_BASE;
+  try {
+    apiBase = parseApiBase(parsed.apiBase);
+  } catch {
+    log.warn('[panel] Telegram 配置文件里的 apiBase 不是受支持的地址，已改用默认地址');
+  }
+  return {
+    token: typeof parsed.token === 'string' ? parsed.token : '',
+    allowedIds: Array.isArray(parsed.allowedIds) ? parsed.allowedIds.filter((s) => /^\d{1,15}$/.test(String(s))).map(String) : [],
+    apiBase,
+  };
+}
+
+// 先写临时文件再 rename，避免半个文件；0600 因为里面有 token。
+function saveTelegramConfig(dir, { token, allowedIds, apiBase }) {
+  const file = fileOf(dir);
+  fs.mkdirSync(dir, { recursive: true });
+  const tmp = `${file}.${process.pid}.tmp`;
+  fs.writeFileSync(tmp, JSON.stringify({ token, allowedIds, apiBase }, null, 2), { mode: 0o600 });
+  try {
+    fs.chmodSync(tmp, 0o600);
+  } catch {
+    /* Windows 上 chmod 只是尽力而为 */
+  }
+  fs.renameSync(tmp, file);
+}
+
+function clearTelegramConfig(dir) {
+  try {
+    fs.rmSync(fileOf(dir), { force: true });
+  } catch {
+    /* 不存在也算成功 */
+  }
+}
+
+module.exports = {
+  DEFAULT_API_BASE,
+  parseAllowedIds,
+  parseToken,
+  parseApiBase,
+  maskToken,
+  readTelegramConfig,
+  saveTelegramConfig,
+  clearTelegramConfig,
+};

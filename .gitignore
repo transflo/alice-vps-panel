@@ -1,0 +1,16 @@
+.env
+node_modules/
+web/node_modules/
+/public/*
+web/public/*
+!web/public/.gitkeep
+!web/public/logo.png
+data/
+.playwright-mcp/
+
+# 根目录的截图是本地产物：面板截图里有实例 IP、主机名、账户信息（地址/邮箱/登录 IP），
+# 本仓库是公开的，别让 git add -A 把它们提交出去。只作用于根目录，不影响 web/public 下的图标。
+/*.png
+/*.jpg
+/*.jpeg
+/*.webp
